@@ -1,0 +1,13 @@
+[package]
+name = "undercloud-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+rand.workspace = true

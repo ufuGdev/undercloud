@@ -1,0 +1,22 @@
+[package]
+name = "undercloud-provider-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+undercloud-storage = { version = "0.1.0", path = "../storage" }
+thiserror.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+undercloud-crypto = { version = "0.1.0", path = "../crypto" }
+undercloud-format = { version = "0.1.0", path = "../format" }
+undercloud-chunker = { version = "0.1.0", path = "../chunker" }
+uuid.workspace = true
+blake3.workspace = true

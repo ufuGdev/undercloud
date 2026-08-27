@@ -1,0 +1,31 @@
+[package]
+name = "undercloud-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+undercloud-catalog = { version = "0.1.0", path = "../catalog" }
+undercloud-chunker = { version = "0.1.0", path = "../chunker" }
+undercloud-crypto = { version = "0.1.0", path = "../crypto" }
+undercloud-format = { version = "0.1.0", path = "../format" }
+undercloud-storage = { version = "0.1.0", path = "../storage" }
+undercloud-provider-local = { version = "0.1.0", path = "../provider-local" }
+undercloud-provider-cloud = { version = "0.1.0", path = "../provider-cloud" }
+undercloud-credentials = { version = "0.1.0", path = "../credentials" }
+thiserror.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+uuid.workspace = true
+blake3.workspace = true
+bincode.workspace = true
+chacha20poly1305.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rusqlite.workspace = true

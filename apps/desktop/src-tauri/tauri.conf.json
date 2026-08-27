@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Undercloud",
+  "version": "0.1.0",
+  "identifier": "dev.undercloud.desktop",
+  "build": { "frontendDist": "../../desktop-ui/dist", "devUrl": "http://localhost:5173" },
+  "app": { "withGlobalTauri": false, "windows": [{ "title": "Undercloud", "width": 960, "height": 800, "resizable": true }], "security": { "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" } },
+  "bundle": { "active": true, "targets": ["deb"], "icon": ["icons/icon.png"] },
+  "plugins": {}
+}

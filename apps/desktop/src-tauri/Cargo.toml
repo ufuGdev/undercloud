@@ -1,0 +1,30 @@
+[package]
+name = "undercloud-desktop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.4.1", features = [] }
+
+[features]
+default = ["native"]
+native = ["tauri/wry"]
+
+[dependencies]
+undercloud-core = { version = "0.1.0", path = "../../../crates/core" }
+undercloud-credentials = { version = "0.1.0", path = "../../../crates/credentials" }
+undercloud-provider-cloud = { version = "0.1.0", path = "../../../crates/provider-cloud" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.8.2", default-features = false, features = [] }
+tokio = { version = "1", features = ["sync", "io-util", "fs", "time"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+tauri-plugin-opener = "2"
+tempfile = "3"
+
+[workspace]

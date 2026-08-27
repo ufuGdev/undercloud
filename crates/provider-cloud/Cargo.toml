@@ -1,0 +1,33 @@
+[package]
+name = "undercloud-provider-cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+publish.workspace = true
+
+[build-dependencies]
+dotenvy.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+tracing.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+webbrowser.workspace = true
+zeroize.workspace = true
+undercloud-credentials = { version = "0.1.0", path = "../credentials" }
+undercloud-storage = { version = "0.1.0", path = "../storage" }
+
+[dev-dependencies]
+tempfile.workspace = true

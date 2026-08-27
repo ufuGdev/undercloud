@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How Undercloud stores and restores your files</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:  #faf8f4;
+      --color-ink:    #1b1b18;
+      --color-muted:  #6e6e68;
+      --color-soft:   #8c8c86;
+      --color-accent: #5fa377;
+      --color-accent-tint: #e3f1e7;
+      --font-sans:  'Geist', system-ui, sans-serif;
+      --font-serif: 'Instrument Serif', serif;
+      --font-mono:  'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+    .frame { max-width: 1280px; width: 100%; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.6rem, 2.2vw + 0.8rem, 2.1rem);
+      font-weight: 400;
+      letter-spacing: -0.01em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 0.6rem;
+    }
+    .subtitle {
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      color: var(--color-muted);
+      margin-bottom: 1.5rem;
+      max-width: 62ch;
+    }
+    svg { width: 100%; min-width: 900px; display: block; }
+    footer {
+      margin-top: 1.25rem;
+      padding-top: 0.9rem;
+      border-top: 1px solid rgba(27,27,24,0.12);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      color: var(--color-muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · Undercloud</p>
+    <h1>How Undercloud stores and restores your files</h1>
+    <p class="subtitle">Files are encrypted on your device. Storage providers receive only opaque encrypted objects.</p>
+
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="undercloud-system-flow-title undercloud-system-flow-desc">
+      <title id="undercloud-system-flow-title">How Undercloud stores and restores your files</title>
+      <desc id="undercloud-system-flow-desc">Architecture diagram showing how Undercloud reads a local file, splits it into fixed-size chunks and encrypts each one on the user's device, stores wrapped keys and the content hash in a local encrypted catalog while provider credentials stay in the OS credential store, and replicates opaque encrypted chunks through a provider adapter layer to two independent storage provider targets; restore reverses the path locally (decrypt each chunk, then verify the whole file's hash) before the file is written back, and health checks repair missing replicas automatically.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#6e6e68"/>
+        </marker>
+        <marker id="arrow-rev" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+          <polygon points="8 0, 0 3, 8 6" fill="#6e6e68"/>
+        </marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#5fa377"/>
+        </marker>
+        <marker id="arrow-accent-rev" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+          <polygon points="8 0, 0 3, 8 6" fill="#5fa377"/>
+        </marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#faf8f4"/>
+
+      <!-- Security banner -->
+      <rect x="40" y="40" width="1200" height="64" rx="8" fill="#e3f1e7" stroke="#5fa377" stroke-width="1.2"/>
+      <text x="640" y="78" text-anchor="middle" font-family="'Geist', sans-serif" font-size="16" font-weight="600" fill="#1b1b18">Plaintext, passwords, and encryption keys never leave your device.</text>
+
+      <!-- Trust zones -->
+      <rect x="40" y="128" width="816" height="288" rx="8" fill="rgba(27,27,24,0.025)" stroke="rgba(27,27,24,0.35)" stroke-width="1"/>
+      <rect x="56" y="132" width="172" height="12" rx="2" fill="#faf8f4"/>
+      <text x="64" y="142" text-anchor="start" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.14em" fill="#6e6e68">YOUR DEVICE — TRUSTED</text>
+
+      <rect x="896" y="128" width="344" height="288" rx="8" fill="rgba(27,27,24,0.025)" stroke="rgba(27,27,24,0.35)" stroke-width="1.2" stroke-dasharray="4,4"/>
+      <rect x="912" y="132" width="232" height="12" rx="2" fill="#faf8f4"/>
+      <text x="920" y="142" text-anchor="start" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.14em" fill="#6e6e68">STORAGE PROVIDERS — UNTRUSTED</text>
+
+      <!-- ===== Arrows (drawn before nodes) ===== -->
+
+      <!-- Local File <-> Undercloud Desktop -->
+      <line x1="176" y1="200" x2="192" y2="200" stroke="#6e6e68" stroke-width="1.2" marker-start="url(#arrow-rev)" marker-end="url(#arrow)"/>
+
+      <!-- Undercloud Desktop -> Chunk (upload only) -->
+      <line x1="352" y1="200" x2="368" y2="200" stroke="#6e6e68" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- Chunk -> Encrypt: plaintext chunk -->
+      <line x1="480" y1="200" x2="528" y2="200" stroke="#6e6e68" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="488" y="180" width="32" height="12" rx="2" fill="#faf8f4"/>
+      <text x="504" y="189" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#55554f">CHUNK</text>
+
+      <!-- Encrypt -> Provider Adapter Layer: encrypted chunk -->
+      <line x1="640" y1="200" x2="696" y2="200" stroke="#5fa377" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <rect x="644" y="180" width="48" height="12" rx="2" fill="#faf8f4"/>
+      <text x="668" y="189" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#3e6f4d">ENCRYPTED</text>
+
+      <!-- Decrypt -> Verify: plaintext chunk (restore, right-to-left) -->
+      <line x1="480" y1="360" x2="432" y2="360" stroke="#6e6e68" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="440" y="340" width="32" height="12" rx="2" fill="#faf8f4"/>
+      <text x="456" y="349" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#55554f">CHUNK</text>
+
+      <!-- Provider Adapter Layer <-> Storage Target A -->
+      <path d="M840,184 H900 Q908,184 908,192 Q908,200 916,200 H976" fill="none" stroke="#5fa377" stroke-width="1.4" marker-start="url(#arrow-accent-rev)" marker-end="url(#arrow-accent)"/>
+      <rect x="848" y="164" width="48" height="12" rx="2" fill="#faf8f4"/>
+      <text x="872" y="173" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#3e6f4d">REPLICATES</text>
+
+      <!-- Provider Adapter Layer <-> Storage Target B -->
+      <path d="M840,216 H900 Q908,216 908,224 V320 Q908,328 916,328 H976" fill="none" stroke="#5fa377" stroke-width="1.4" marker-start="url(#arrow-accent-rev)" marker-end="url(#arrow-accent)"/>
+      <rect x="848" y="196" width="48" height="12" rx="2" fill="#faf8f4"/>
+      <text x="872" y="205" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#3e6f4d">REPLICATES</text>
+
+      <!-- Undercloud Desktop <-> Encrypted Catalog + Credential Store: wrapped keys / content hash -->
+      <path d="M244,240 V256 Q244,264 236,264 H224 Q216,264 216,272 V320" fill="none" stroke="#6e6e68" stroke-width="1.2" marker-start="url(#arrow-rev)" marker-end="url(#arrow)"/>
+
+      <!-- Verify -> Undercloud Desktop: verified file, restore's final leg -->
+      <path d="M376,320 V272 Q376,264 368,264 H308 Q300,264 300,256 V240" fill="none" stroke="#6e6e68" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="312" y="244" width="48" height="12" rx="2" fill="#faf8f4"/>
+      <text x="336" y="253" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#55554f">VERIFIED</text>
+
+      <!-- Provider Adapter Layer -> Decrypt: encrypted chunk arriving for restore -->
+      <path d="M792,240 V256 Q792,264 784,264 H544 Q536,264 536,272 V320" fill="none" stroke="#5fa377" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <rect x="640" y="244" width="48" height="12" rx="2" fill="#faf8f4"/>
+      <text x="664" y="253" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#3e6f4d">ENCRYPTED</text>
+
+      <!-- Encrypted Catalog + Credential Store -> Provider Adapter Layer: authenticates (one-way, dashed) -->
+      <path d="M136,320 V312 Q136,304 144,304 H736 Q744,304 744,296 V240" fill="none" stroke="#6e6e68" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <rect x="400" y="284" width="84" height="12" rx="2" fill="#faf8f4"/>
+      <text x="442" y="293" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.06em" fill="#55554f">AUTHENTICATES</text>
+
+      <!-- ===== Nodes ===== -->
+
+      <!-- Local File -->
+      <rect x="56" y="160" width="120" height="80" rx="8" fill="rgba(110,110,104,0.10)" stroke="#8c8c86" stroke-width="1"/>
+      <text x="116" y="204" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Local File</text>
+
+      <!-- Undercloud Desktop -->
+      <rect x="192" y="160" width="160" height="80" rx="8" fill="#ffffff" stroke="#1b1b18" stroke-width="1"/>
+      <text x="272" y="204" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Undercloud Desktop</text>
+
+      <!-- Chunk -->
+      <rect x="368" y="160" width="112" height="80" rx="8" fill="#ffffff" stroke="#1b1b18" stroke-width="1"/>
+      <text x="424" y="194" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Chunk</text>
+      <text x="424" y="210" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="9" fill="#6e6e68">~6 MB each</text>
+
+      <!-- Encrypt -->
+      <rect x="528" y="160" width="112" height="80" rx="8" fill="#ffffff" stroke="#1b1b18" stroke-width="1"/>
+      <text x="584" y="194" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Encrypt</text>
+      <text x="584" y="210" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="9" fill="#6e6e68">per chunk</text>
+
+      <!-- Provider Adapter Layer (focal) -->
+      <rect x="696" y="160" width="144" height="80" rx="8" fill="#e3f1e7" stroke="#5fa377" stroke-width="1.6"/>
+      <text x="768" y="194" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Provider Adapter</text>
+      <text x="768" y="208" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Layer</text>
+
+      <!-- Encrypted Catalog + OS Credential Store -->
+      <rect x="56" y="320" width="240" height="80" rx="8" fill="rgba(27,27,24,0.05)" stroke="#6e6e68" stroke-width="1"/>
+      <text x="176" y="354" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Encrypted Catalog +</text>
+      <text x="176" y="368" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">OS Credential Store</text>
+
+      <!-- Verify -->
+      <rect x="320" y="320" width="112" height="80" rx="8" fill="#ffffff" stroke="#1b1b18" stroke-width="1"/>
+      <text x="376" y="354" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Verify</text>
+      <text x="376" y="370" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="9" fill="#6e6e68">hash check</text>
+
+      <!-- Decrypt -->
+      <rect x="480" y="320" width="112" height="80" rx="8" fill="#ffffff" stroke="#1b1b18" stroke-width="1"/>
+      <text x="536" y="354" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Decrypt</text>
+      <text x="536" y="370" text-anchor="middle" font-family="'Geist Mono', monospace" font-size="9" fill="#6e6e68">per chunk</text>
+
+      <!-- Storage Target A -->
+      <rect x="976" y="160" width="180" height="80" rx="8" fill="rgba(27,27,24,0.03)" stroke="rgba(27,27,24,0.30)" stroke-width="1"/>
+      <text x="1066" y="204" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Storage Target A</text>
+
+      <!-- Storage Target B -->
+      <rect x="976" y="320" width="180" height="80" rx="8" fill="rgba(27,27,24,0.03)" stroke="rgba(27,27,24,0.30)" stroke-width="1"/>
+      <text x="1066" y="364" text-anchor="middle" font-family="'Geist', sans-serif" font-size="12" font-weight="600" fill="#1b1b18">Storage Target B</text>
+
+      <!-- Annotation callout: health check + repair -->
+      <text x="744" y="472" font-family="'Instrument Serif', serif" font-style="italic" font-size="14" fill="#4f4f49">missing replicas repair automatically</text>
+      <path d="M 744 472 Q 864 428 972 400" fill="none" stroke="rgba(27,27,24,0.35)" stroke-width="1" stroke-dasharray="4,3"/>
+      <circle cx="972" cy="400" r="2" fill="#1b1b18"/>
+
+      <!-- Legend -->
+      <line x1="40" y1="652" x2="1240" y2="652" stroke="rgba(27,27,24,0.12)" stroke-width="0.8"/>
+      <text x="40" y="676" font-family="'Geist Mono', monospace" font-size="8" letter-spacing="0.14em" fill="#6e6e68">LEGEND</text>
+
+      <line x1="140" y1="672" x2="164" y2="672" stroke="#5fa377" stroke-width="2"/>
+      <text x="172" y="676" font-family="'Geist Mono', monospace" font-size="8" fill="#4a4a45">Encrypted data flow</text>
+
+      <line x1="380" y1="672" x2="404" y2="672" stroke="#6e6e68" stroke-width="1.4"/>
+      <text x="412" y="676" font-family="'Geist Mono', monospace" font-size="8" fill="#4a4a45">Local processing</text>
+
+      <line x1="620" y1="672" x2="644" y2="672" stroke="#6e6e68" stroke-width="1.2" stroke-dasharray="4,3"/>
+      <text x="652" y="676" font-family="'Geist Mono', monospace" font-size="8" fill="#4a4a45">Credential lookup</text>
+    </svg>
+
+    <footer>Authenticated encryption · Local encrypted catalog · Two-target protection</footer>
+  </div>
+</body>
+</html>

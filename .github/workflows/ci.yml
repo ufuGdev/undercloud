@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  rust:
+    name: Rust workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-root-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-root-
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Run debug tests
+        run: cargo test --workspace --all-features
+      - name: Run release tests
+        run: cargo test --workspace --all-features --release
+      - name: Check dependency policy
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+  desktop-tauri:
+    name: Tauri desktop workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: ${{ runner.os }}-cargo-tauri-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tauri-
+      - name: Check formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+      - name: Run Clippy
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Check desktop workspace
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features
+      - name: Run desktop tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-features
+
+  fuzz:
+    name: Fuzz targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Build fuzz targets
+        run: cargo fuzz build -s none --debug-assertions -O
+        working-directory: crates/format/fuzz
+      - name: Smoke-test chunk parser
+        run: cargo fuzz run chunk_envelope -s none -- -max_total_time=30 -rss_limit_mb=2560
+        working-directory: crates/format/fuzz
+      - name: Smoke-test manifest parser
+        run: cargo fuzz run manifest -s none -- -max_total_time=30 -rss_limit_mb=2560
+        working-directory: crates/format/fuzz
+
+  frontend:
+    name: Desktop UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/desktop-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop-ui/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Type-check
+        run: pnpm exec tsc --noEmit
+      - name: Run tests
+        run: pnpm test
+      - name: Build UI
+        run: pnpm build

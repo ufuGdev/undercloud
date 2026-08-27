@@ -1,0 +1,30 @@
+[package]
+name = "undercloud-format-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.undercloud-format]
+path = ".."
+
+[[bin]]
+name = "chunk_envelope"
+path = "fuzz_targets/chunk_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false

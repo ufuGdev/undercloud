@@ -1,0 +1,94 @@
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+!.env.template
+.secrets/
+*.secret
+*.secrets
+credentials*.json
+service-account*.json
+client_secret*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Rust and Cargo build output
+target/
+**/target/
+Cargo.lock.*
+
+# Tauri generated files and bundles
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/*.dmg
+apps/desktop/src-tauri/*.AppImage
+apps/desktop/src-tauri/*.deb
+apps/desktop/src-tauri/*.rpm
+apps/desktop/src-tauri/*.msi
+apps/desktop/src-tauri/*.nsis.zip
+
+# JavaScript package managers and frontend build output
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+.turbo/
+coverage/
+**/coverage/
+.pnpm-debug.log
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local databases and SQLite sidecars
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Temporary files, logs, and local reports
+*.tmp
+*.log
+logs/
+tmp/
+.tmp/
+
+# Fuzzing and local test artifacts
+crates/format/fuzz/artifacts/
+
+# Local/generated documentation assets
+docs/logo.png
+docs/assets/*.png
+
+# Local AI/agent instructions 
+AGENTS.md
+**/AGENTS.md
+.codex/
+.claude/
+.cursor/
+.aider*
+.superpowers/
+docs/superpowers/
+*prompt*.md
+*PROMPT*.md
+*_session_*.md

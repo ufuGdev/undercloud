@@ -1,0 +1,19 @@
+[graph]
+all-features = true
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "BSD-2-Clause", "ISC", "Unicode-3.0", "Unicode-DFS-2016", "Zlib"]
+exceptions = [{ crate = "webpki-roots@1.0.9", allow = ["CDLA-Permissive-2.0"] }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[advisories]
+yanked = "deny"
+# bincode 1.x is required for compatibility with existing recovery kits; no maintained 1.x upgrade exists.
+ignore = ["RUSTSEC-2025-0141"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

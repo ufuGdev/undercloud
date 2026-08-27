@@ -1,0 +1,8 @@
+{
+  "name": "undercloud-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.5",
+  "scripts": { "dev": "tauri dev", "build": "tauri build", "test": "cargo test --manifest-path src-tauri/Cargo.toml" },
+  "devDependencies": { "@tauri-apps/cli": "2.11.4" }
+}
