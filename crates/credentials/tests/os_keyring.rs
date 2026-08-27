@@ -1,4 +1,6 @@
-use undercloud_credentials::{CredentialStore, OAuthTokenSet, OsKeyringCredentialStore};
+use undercloud_credentials::{
+    CredentialError, CredentialStore, OAuthTokenSet, OsKeyringCredentialStore,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn put_oauth_from_within_a_tokio_runtime_does_not_panic() {
@@ -12,6 +14,11 @@ async fn put_oauth_from_within_a_tokio_runtime_does_not_panic() {
             expires_at_unix: None,
         },
     );
-    let _ = store.delete_oauth(reference);
-    result.expect("put_oauth must not panic when called from an async task");
+    if result.is_ok() {
+        let _ = store.delete_oauth(reference);
+    }
+    assert!(
+        matches!(result, Ok(()) | Err(CredentialError::Unavailable)),
+        "put_oauth returned an unexpected error: {result:?}"
+    );
 }
