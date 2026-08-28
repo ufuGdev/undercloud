@@ -4,6 +4,8 @@ import { DataTable, type DataTableColumn } from "../../components/ui/DataTable";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Page } from "../../components/ui/Page";
 
+const ACTIVITY_PAGE_SIZE = 10;
+
 type GroupedRow = { key: string; operation: string; item: string; status: string; startedAt: string; completedAt: string | null };
 
 function groupByOperation(events: ActivityEvent[]): GroupedRow[] {
@@ -45,7 +47,7 @@ const COLUMNS: DataTableColumn<GroupedRow>[] = [
 export function Activity() {
   const [events, setEvents] = useState<ActivityEvent[]>([]); const [cursor, setCursor] = useState<string | null>(null); const [loading, setLoading] = useState(false); const [status, setStatus] = useState("");
   const loadingRef = useRef(false);
-  const load = async (next?: string) => { if (loadingRef.current) return; loadingRef.current = true; setLoading(true); try { const page = await commands.activityEvents({ cursor: next, pageSize: 50 }); setEvents(current => next ? mergeEvents(current, page.events) : mergeEvents([], page.events)); setCursor(page.next_cursor); setStatus(""); } catch { setStatus("Activity history is temporarily unavailable."); } finally { loadingRef.current = false; setLoading(false); } };
+  const load = async (next?: string) => { if (loadingRef.current) return; loadingRef.current = true; setLoading(true); try { const page = await commands.activityEvents({ cursor: next, pageSize: ACTIVITY_PAGE_SIZE }); setEvents(current => next ? mergeEvents(current, page.events) : mergeEvents([], page.events)); setCursor(page.next_cursor); setStatus(""); } catch { setStatus("Activity history is temporarily unavailable."); } finally { loadingRef.current = false; setLoading(false); } };
   useEffect(() => { void load(); }, []);
   const rows = useMemo(() => groupByOperation(events), [events]);
   return <Page title="Activity" subtitle="Durable vault operations and history.">
