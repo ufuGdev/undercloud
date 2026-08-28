@@ -481,11 +481,34 @@ fn command_error(error: CoreError) -> CommandError {
         CoreError::VaultNotFound => "vault_not_found",
     };
     let incident_id = Uuid::new_v4();
-    tracing::error!(target: "undercloud.command", subsystem="tauri", operation="command", incident_id=%incident_id, stage="complete", outcome="failure", error_code=code);
+    match code {
+        "authentication_failed"
+        | "locked"
+        | "destination_exists"
+        | "duplicate_provider"
+        | "invalid_transition"
+        | "unsupported_recovery_version"
+        | "stale_recovery_snapshot"
+        | "invalid_recovery_kit"
+        | "cancelled"
+        | "provider_authentication_required"
+        | "provider_permission_denied" => {
+            tracing::warn!(target: "undercloud.command", subsystem="tauri", operation="command", incident_id=%incident_id, stage="complete", outcome="rejected", error_code=code)
+        }
+        _ => {
+            tracing::error!(target: "undercloud.command", subsystem="tauri", operation="command", incident_id=%incident_id, stage="complete", outcome="failure", error_code=code)
+        }
+    }
     CommandError {
         code,
         detail: Some(format!("incident_id:{incident_id}")),
     }
+}
+
+#[tauri::command]
+pub fn page_view(page: String, operation_id: String) {
+    let _span = command_span("page_view", &operation_id);
+    tracing::info!(target: "undercloud.navigation", subsystem="ui", operation="page_view", operation_id=%operation_id, page=%page, stage="entered", outcome="complete", "Page opened");
 }
 
 #[tauri::command]

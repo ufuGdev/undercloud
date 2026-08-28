@@ -90,4 +90,5 @@ export const commands = {
   recoveryFreshness: () => call<RecoveryFreshness>("recovery_freshness"),
   loggingStatus: () => call<LoggingStatus>("logging_status"),
   openLogFolder: () => call<void>("open_log_folder"),
+  pageView: (page: string) => call<void>("page_view", { page }),
 };

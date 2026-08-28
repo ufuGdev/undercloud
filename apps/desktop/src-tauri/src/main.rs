@@ -55,7 +55,8 @@ fn main() {
             commands::pick_file,
             commands::pick_folder,
             commands::logging_status,
-            commands::open_log_folder
+            commands::open_log_folder,
+            commands::page_view
         ])
         .run(tauri::generate_context!())
         .expect("desktop runtime failed");

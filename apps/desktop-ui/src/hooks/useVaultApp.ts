@@ -22,7 +22,11 @@ function rememberedRestoreMode(): "ask" | "fixed" {
 
 export function useVaultApp() {
   const [status, setStatus] = useState<Status>({ state: "locked", vault_id: null });
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setViewState] = useState<View>("dashboard");
+  const setView = useCallback((next: View) => {
+    setViewState(next);
+    void commands.pageView(next);
+  }, []);
   const [vaultPath, setVaultPathState] = useState(rememberedVaultPath);
   const [onboarding, setOnboarding] = useState<OnboardingStep | null>(() =>
     rememberedVaultPath() ? null : "welcome"

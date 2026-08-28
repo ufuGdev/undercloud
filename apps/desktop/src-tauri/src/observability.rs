@@ -128,14 +128,14 @@ pub fn initialize(app: &AppHandle) -> LoggingState {
         let (non_blocking, guard) = tracing_appender::non_blocking(writer);
         let fmt = tracing_subscriber::fmt::layer().json().with_writer(non_blocking).with_current_span(true).with_span_list(true).with_span_events(FmtSpan::CLOSE);
         let filter = EnvFilter::new("undercloud=info,undercloud_desktop=info,undercloud_core=info,undercloud_catalog=info,undercloud_provider_cloud=info,undercloud_credentials=info");
-        let console = tracing_subscriber::fmt::layer().with_ansi(cfg!(debug_assertions)).with_span_events(FmtSpan::CLOSE);
+        let console = tracing_subscriber::fmt::layer().compact().with_ansi(cfg!(debug_assertions)).with_target(false).with_thread_ids(false).with_thread_names(false).with_file(false).with_line_number(false);
         let _ = tracing_subscriber::registry().with(filter).with(fmt).with(console).try_init();
         guard
     });
     let (guard, warning) = match result {
         Ok(guard) => (Some(guard), None),
         Err(_error) => {
-            let _ = tracing_subscriber::registry().with(EnvFilter::new("undercloud=info,undercloud_desktop=info,undercloud_core=info,undercloud_catalog=info,undercloud_provider_cloud=info,undercloud_credentials=info")).with(tracing_subscriber::fmt::layer().with_ansi(cfg!(debug_assertions)).with_span_events(FmtSpan::CLOSE)).try_init();
+            let _ = tracing_subscriber::registry().with(EnvFilter::new("undercloud=info,undercloud_desktop=info,undercloud_core=info,undercloud_catalog=info,undercloud_provider_cloud=info,undercloud_credentials=info")).with(tracing_subscriber::fmt::layer().compact().with_ansi(cfg!(debug_assertions)).with_target(false).with_thread_ids(false).with_thread_names(false).with_file(false).with_line_number(false)).try_init();
             (
                 None,
                 Some("Persistent logging unavailable on this device.".into()),
