@@ -52,7 +52,7 @@ fn unsupported_version_fails_closed() {
 
 #[test]
 fn version_one_above_current_is_rejected() {
-    // The boundary just past the current version must be rejected, not silently parsed: a future writer's layout may differ in ways a v1 reader cannot see.
+    // Reject versions newer than the parser understands.
     let mut bytes = serialize_chunk_envelope(&sample());
     bytes[5] = 2; // version 2, big-endian low byte
     assert!(matches!(

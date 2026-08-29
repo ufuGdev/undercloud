@@ -31,7 +31,7 @@ impl<const N: usize> fmt::Debug for SecretBytes<N> {
     }
 }
 
-/// The vault's single random master key; never derived from a password, only wrapped/unwrapped by one (ADR-002).
+/// The vault.s random master key is never derived from a password.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct MasterKey(SecretBytes<32>);
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Purpose-specific vault subkeys derived via HKDF-SHA-256 (ADR-006); no salt passed to `Hkdf::new` since the master key is already high-entropy CSPRNG IKM.
+//! Derives purpose-specific vault subkeys with HKDF-SHA-256 from master-key material.
 use hkdf::Hkdf;
 use sha2::Sha256;
 use uuid::Uuid;
@@ -12,7 +12,7 @@ const CATALOG_FIELD_LABEL: &[u8] = b"undercloud/catalog-field/v1";
 const CONTENT_HASH_LABEL: &[u8] = b"undercloud/content-hash/v1";
 const RECOVERY_LABEL: &[u8] = b"undercloud/recovery/v1";
 
-/// Wraps per-file `DataEncryptionKey`/`ManifestKey` for persistence; nominally distinct from the other three subkey types despite all wrapping 32 secret bytes.
+/// Wraps per-file keys for persistence while keeping their types distinct.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct FileKeyWrapSubkey(SecretBytes<32>);
 
@@ -40,7 +40,7 @@ impl CatalogFieldSubkey {
     }
 }
 
-/// Keys the content-identity hash (`ContentHasher`); nominally distinct from the other three subkey types.
+/// Key for content-identity hashing.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ContentHashSubkey(SecretBytes<32>);
 
@@ -54,7 +54,7 @@ impl ContentHashSubkey {
     }
 }
 
-/// Protects the recovery-kit's embedded catalog snapshot; nominally distinct from the other three subkey types.
+/// Key for protecting the recovery-kit catalog snapshot.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct RecoverySubkey(SecretBytes<32>);
 
@@ -68,7 +68,7 @@ impl RecoverySubkey {
     }
 }
 
-/// The complete set of purpose-specific subkeys derived from a vault's master key for one `vault_id`.
+/// All purpose-specific subkeys derived for one vault.
 #[derive(Clone)]
 pub struct VaultSubkeys {
     pub file_key_wrap: FileKeyWrapSubkey,
@@ -88,7 +88,7 @@ fn expand_subkey(hkdf: &Hkdf<Sha256>, label: &[u8], vault_id: Uuid) -> [u8; 32] 
     okm
 }
 
-/// Derives all four purpose-specific vault subkeys from `master_key` and `vault_id` via HKDF-SHA-256 (ADR-006); `info = label || vault_id.as_bytes()`, no salt passed to `Hkdf::new`.
+/// Derives all four vault subkeys from the master key and vault ID.
 pub fn derive_vault_subkeys(master_key: &MasterKey, vault_id: Uuid) -> VaultSubkeys {
     let hkdf = Hkdf::<Sha256>::new(None, master_key.expose_bytes());
 

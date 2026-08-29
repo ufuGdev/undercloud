@@ -48,7 +48,7 @@ fn unknown_critical_field_fails_closed() {
 
 #[test]
 fn duplicate_known_field_fails_closed() {
-    // A fail-closed TLV parser must not let a second occurrence of a known tag silently overwrite the first (last-one-wins); hand-build a body with TAG_FILE_SIZE (0x0001) appearing twice.
+    // Reject duplicate known tags instead of silently taking the last value.
     let mut bytes = serialize_manifest_body(&sample_body());
     let duplicate_file_size_tag: u16 = 0x0001;
     bytes.extend_from_slice(&duplicate_file_size_tag.to_be_bytes());
@@ -77,7 +77,7 @@ fn manifest_envelope_round_trips_and_fails_closed_on_bad_magic() {
 
 #[test]
 fn manifest_envelope_version_one_above_current_is_rejected() {
-    // The boundary just past the current version must be rejected, not silently parsed: a future writer's layout may differ in ways a v1 reader cannot see.
+    // Reject versions newer than the parser understands.
     let env = ManifestEnvelope {
         format_version: 1,
         vault_id: Uuid::from_u128(1),

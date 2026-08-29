@@ -41,7 +41,7 @@ fn two_wraps_of_the_same_key_use_different_salts_and_nonces() {
 
 #[test]
 fn unwrap_rejects_absurd_persisted_argon2_params_without_hashing() {
-    // An absurd m_cost (~4 GiB) must be rejected before Params::new/Argon2, which could OOM or abort the process (panic="abort" release profile) during unlock; assert both the error and that it returned fast.
+    // Reject excessive Argon2 memory before hashing.
     let key = generate_master_key();
     let mut wrapped = wrap_master_key(vault_id_a(), "correct horse battery staple", &key).unwrap();
     wrapped.m_cost = 4_000_000; // ~4 GiB, far outside sane bounds
@@ -67,7 +67,7 @@ fn password_change_reruns_wrap_without_changing_underlying_key() {
     assert_eq!(recovered_old.expose_bytes(), recovered_new.expose_bytes());
 }
 
-/// ADR-006's cross-vault rejection: an envelope wrapped for `vault_id_a` must fail to unwrap under `vault_id_b`, since the AAD binds `vault_id`.
+/// Rejects envelopes authenticated for a different vault ID.
 #[test]
 fn unwrap_rejects_correct_envelope_under_a_different_vault_id() {
     let key = generate_master_key();
@@ -76,7 +76,7 @@ fn unwrap_rejects_correct_envelope_under_a_different_vault_id() {
     assert!(result.is_err());
 }
 
-/// Ciphertext/tag tampering must fail closed; closes a gap Milestone 0's wrap.rs lacked, mirroring the chunk/manifest AEAD tampering tests.
+/// Rejects ciphertext and tag tampering.
 #[test]
 fn tampering_with_ciphertext_fails_closed() {
     let key = generate_master_key();
@@ -86,7 +86,7 @@ fn tampering_with_ciphertext_fails_closed() {
     assert!(unwrap_master_key(vault_id_a(), "correct horse battery staple", &wrapped).is_err());
 }
 
-/// Tampering with the authentication tag (final 16 bytes of `ciphertext` under XChaCha20-Poly1305's combined encoding) must also fail closed.
+/// Rejects authentication-tag tampering.
 #[test]
 fn tampering_with_authentication_tag_fails_closed() {
     let key = generate_master_key();
@@ -96,7 +96,7 @@ fn tampering_with_authentication_tag_fails_closed() {
     assert!(unwrap_master_key(vault_id_a(), "correct horse battery staple", &wrapped).is_err());
 }
 
-/// An `envelope_version` other than the current `PASSWORD_ENVELOPE_VERSION` must be rejected before AEAD is touched (ADR-006), for a clear error instead of a confusing auth failure.
+/// Rejects unsupported envelope versions before AEAD.
 #[test]
 fn unwrap_rejects_unsupported_envelope_version() {
     let key = generate_master_key();
@@ -105,7 +105,7 @@ fn unwrap_rejects_unsupported_envelope_version() {
     assert!(unwrap_master_key(vault_id_a(), "correct horse battery staple", &wrapped).is_err());
 }
 
-/// ADR-006's AAD includes a key-envelope-type byte (`KEY_ENVELOPE_TYPE_MASTER_KEY = 0x01`); no second envelope type exists yet, so this test hand-builds a wrong-type AAD with the same primitives to verify the byte is checked at all.
+/// Verifies the key-envelope type is included in AAD.
 #[test]
 fn unwrap_rejects_ciphertext_produced_with_a_different_key_envelope_type_byte() {
     use argon2::{Algorithm, Argon2, Params, Version};
@@ -128,7 +128,7 @@ fn unwrap_rejects_ciphertext_produced_with_a_different_key_envelope_type_byte() 
         .hash_password_into(password.as_bytes(), &salt, &mut pdk)
         .unwrap();
 
-    // AAD identical to production's password_envelope_aad, except the final key-envelope-type byte is 0x02 instead of the real 0x01.
+    // Use a different key-envelope type in the test AAD.
     let mut wrong_type_aad = Vec::with_capacity(1 + 2 + 16 + 4 + 4 + 4 + 1);
     wrong_type_aad.push(0x01); // PASSWORD_ENVELOPE_DOMAIN, unchanged
     wrong_type_aad.extend_from_slice(&envelope_version.to_be_bytes());
@@ -162,6 +162,6 @@ fn unwrap_rejects_ciphertext_produced_with_a_different_key_envelope_type_byte() 
         ciphertext,
     };
 
-    // Production computes the AAD with type byte 0x01, which won't match the 0x02 this ciphertext was authenticated under, so this must fail closed.
+    // The production AAD type differs, so authentication must fail.
     assert!(unwrap_master_key(vault_id, password, &envelope).is_err());
 }

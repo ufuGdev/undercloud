@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Known-answer tests pinning Milestone 0's wire-format byte layout; a failure means the on-disk layout changed, so understand why before updating the expected hex (same rule as crates/crypto/tests/kat.rs).
+//! Known-answer tests for the on-disk wire format.
 use undercloud_format::{
     parse_chunk_envelope, parse_manifest_body, parse_manifest_envelope, serialize_chunk_envelope,
     serialize_manifest_body, serialize_manifest_envelope, ChunkEnvelope, ManifestBody,
@@ -14,7 +14,7 @@ fn hex_decode(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// vault_id/file_version_id/nonce/ciphertext are fixed filler bytes; this vector is about header layout, not AEAD content (see crates/crypto/tests/kat.rs for the real ciphertext KAT).
+/// Header-layout vector using fixed filler bytes; ciphertext is not tested here.
 #[test]
 fn chunk_envelope_known_answer_vector() {
     let env = ChunkEnvelope {
@@ -51,7 +51,7 @@ fn manifest_body_known_answer_vector() {
     assert_eq!(parsed, body);
 }
 
-/// Ciphertext field is the manifest_body vector's bytes used as opaque payload — manifest AEAD isn't implemented yet (see ADR-002's M1 status note).
+/// Uses the manifest body vector as opaque ciphertext until manifest AEAD is implemented.
 #[test]
 fn manifest_envelope_known_answer_vector() {
     let body_bytes = hex_decode("00010000000800000000000000c800020000000400000004000300000020abababababababababababababababababababababababababababababababab");

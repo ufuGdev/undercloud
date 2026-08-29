@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Cryptographic primitives for Undercloud's vault key hierarchy, AEAD encryption, and content hashing; no I/O, no provider knowledge, no catalog knowledge — see ADR-002 and ADR-006 for the design.
+//! Cryptographic primitives for the vault key hierarchy, AEAD, and content hashing.
 mod chunk;
 mod content_hash;
 mod dek;

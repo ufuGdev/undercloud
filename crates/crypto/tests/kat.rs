@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Known-answer tests pinning the on-disk wire format; a failure here means the format silently changed — never "fix" it by updating expected hex without confirming intent and backward-compat impact.
+//! Known-answer tests pinning the on-disk wire format.
 use undercloud_crypto::{
     decrypt_chunk, decrypt_manifest, derive_vault_subkeys, unwrap_dek, unwrap_manifest_key,
     unwrap_master_key, ChunkIdentity, ContentHashSubkey, ContentHasher, DataEncryptionKey,
@@ -139,7 +139,7 @@ fn password_envelope_known_answer_vector_rejects_wrong_password() {
     assert!(unwrap_master_key(Uuid::from_bytes([0xD1; 16]), "wrong-password", &envelope).is_err());
 }
 
-/// Sanity check that MasterKey::from_bytes/expose_bytes round-trip the fixed bytes used across these vectors, independent of any AEAD/KDF.
+/// Confirms the fixed master-key bytes round-trip independently of AEAD and KDF.
 #[test]
 fn master_key_from_bytes_matches_known_bytes() {
     let key = MasterKey::from_bytes([0x66; 32]);

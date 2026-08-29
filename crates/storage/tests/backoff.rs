@@ -5,7 +5,7 @@ use undercloud_storage::backoff_delay;
 
 #[test]
 fn backoff_grows_with_attempt_number() {
-    // `backoff_delay` uses full jitter, so comparing single samples across attempts is flaky; assert the deterministic per-attempt cap bounds instead.
+    // Full jitter makes exact samples flaky; assert the attempt cap instead.
     const CAP_ATTEMPT_0_MS: u64 = 200; // BASE_MS * 2^0
     const CAP_ATTEMPT_3_MS: u64 = 1600; // BASE_MS * 2^3, strictly > CAP_ATTEMPT_0_MS
 

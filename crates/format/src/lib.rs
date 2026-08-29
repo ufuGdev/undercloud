@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Versioned wire format for encrypted chunk and manifest envelopes; moves opaque encrypted bytes, has no encryption keys.
+//! Versioned wire format for encrypted chunk and manifest envelopes.
 
 mod chunk_envelope;
 mod error;

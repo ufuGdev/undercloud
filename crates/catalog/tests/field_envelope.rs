@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Integration tests for `crates/catalog`'s field-encryption envelope (ADR-003 "Field-encryption envelope"): the known-answer vector, round trips, tamper rejection, and cross-row/column/table/vault substitution rejection.
+//! Integration tests for the catalog field-encryption envelope.
 use undercloud_catalog::{decrypt_field, encrypt_field, CatalogError, EntityType, FieldTag};
 use undercloud_crypto::CatalogFieldSubkey;
 use uuid::Uuid;
 
-/// Decodes a lowercase hex string into bytes; a small local helper rather than adding a new dependency for it.
+/// Decodes a lowercase hexadecimal string for test vectors.
 fn hex_decode(s: &str) -> Vec<u8> {
     assert!(
         s.len().is_multiple_of(2),
@@ -16,7 +16,7 @@ fn hex_decode(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Catalog field-envelope KAT (subkey/vault_id/entity_id/nonce as noted below); independently generated via PyNaCl (libsodium XChaCha20-Poly1305, independent of this crate's chacha20poly1305 dependency) so expected bytes come from an oracle, not this crate's own code (ADR-003).
+/// Independently generated field-envelope vector used as an encryption oracle.
 #[test]
 fn field_envelope_known_answer_vector() {
     let subkey = CatalogFieldSubkey::from_bytes([0x21; 32]);
@@ -128,8 +128,6 @@ fn field_envelope_known_answer_vector_rejects_wrong_field_tag() {
     );
     assert!(result.is_err(), "wrong field_tag must be rejected");
 }
-
-// --- Round trips ---
 
 fn fresh_context() -> (CatalogFieldSubkey, Uuid, Uuid) {
     (
@@ -258,8 +256,6 @@ fn round_trip_non_ascii_utf8_plaintext() {
     );
 }
 
-// --- Tamper rejection ---
-
 #[test]
 fn tampered_nonce_fails_closed() {
     let (subkey, vault_id, entity_id) = fresh_context();
@@ -353,8 +349,6 @@ fn tampered_tag_fails_closed() {
     assert!(result.is_err(), "tampered tag must be rejected");
 }
 
-// --- Truncation / version rejection ---
-
 #[test]
 fn envelope_shorter_than_header_is_truncated_without_aead_attempt() {
     let subkey = CatalogFieldSubkey::from_bytes([0x11; 32]);
@@ -400,7 +394,7 @@ fn empty_envelope_is_truncated() {
     }
 }
 
-/// An `envelope_version` of 2 must be rejected *before* any AEAD attempt — proven by reusing a real validly-encrypted envelope's nonce/ciphertext, so a skipped version check would instead fail with `CatalogError::Encryption`, not the expected `UnsupportedFieldEnvelopeVersion`.
+/// Rejects version 2 before attempting AEAD.
 #[test]
 fn unsupported_envelope_version_is_rejected_before_aead_attempt() {
     let subkey = CatalogFieldSubkey::from_bytes([0x11; 32]);
@@ -418,7 +412,7 @@ fn unsupported_envelope_version_is_rejected_before_aead_attempt() {
     )
     .unwrap();
 
-    // Overwrite the version header with 2, leaving a genuinely valid version-1 nonce/ciphertext/tag untouched, so a skipped version check would still run (and fail) AEAD instead.
+    // Keep valid ciphertext so the version check runs before AEAD.
     envelope[0..2].copy_from_slice(&2u16.to_be_bytes());
 
     let result = decrypt_field(
@@ -435,8 +429,6 @@ fn unsupported_envelope_version_is_rejected_before_aead_attempt() {
         other => panic!("expected CatalogError::UnsupportedFieldEnvelopeVersion, got {other:?}"),
     }
 }
-
-// --- Cross-row / cross-column / cross-table substitution ---
 
 #[test]
 fn cross_row_substitution_fails_same_entity_type_different_entity_id() {
@@ -500,7 +492,6 @@ fn cross_column_substitution_fails_same_entity_id_different_field_tag() {
 
 #[test]
 fn cross_table_substitution_fails_same_entity_id_different_entity_type() {
-    // Same UUID numerically used for both rows, to prove entity_type alone separates them (not entity_id happening to differ).
     let subkey = CatalogFieldSubkey::from_bytes([0x11; 32]);
     let vault_id = Uuid::new_v4();
     let shared_id = Uuid::new_v4();

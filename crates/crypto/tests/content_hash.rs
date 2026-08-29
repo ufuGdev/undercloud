@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Structural tests for the keyed content hash (ADR-006); the KAT vector lives in tests/kat.rs — this file covers streaming equivalence, empty-input determinism, and key sensitivity.
+//! Structural tests for keyed content hashing.
 use undercloud_crypto::{ContentHashSubkey, ContentHasher};
 
-/// Hashing a fixed plaintext in one `update()` call must produce the same digest as several small, unaligned `update()` calls.
+/// Confirms one-shot and incremental hashing produce the same digest.
 #[test]
 fn streaming_equivalence() {
     let plaintext: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
@@ -23,7 +23,7 @@ fn streaming_equivalence() {
     assert_eq!(whole_digest, streamed_digest);
 }
 
-/// `ContentHasher::new(key).finalize()` with zero `update()` calls is BLAKE3's well-defined keyed hash of the empty input, deterministic across instances.
+/// Confirms the keyed hash of empty input is deterministic.
 #[test]
 fn empty_input_is_deterministic() {
     let key = ContentHashSubkey::from_bytes([0x5A; 32]);

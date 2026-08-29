@@ -32,7 +32,7 @@ fn tampering_with_ciphertext_fails_closed() {
 
 #[test]
 fn chunk_reorder_is_rejected() {
-    // Encrypted as index 0, decrypted as index 1 — simulates a tampered manifest pointing at the wrong slot.
+    // Use different slots to model a tampered manifest index.
     let dek = generate_dek();
     let encrypted = encrypt_chunk(&dek, &identity(0), b"payload").unwrap();
     let result = decrypt_chunk(&dek, &identity(1), &encrypted);

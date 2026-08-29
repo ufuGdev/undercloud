@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 #[test]
 fn chunk_envelope_debug_does_not_pretty_print_ciphertext_as_utf8_plaintext_marker() {
-    // Regression guard: an accidentally-added Display impl must not interpret ciphertext bytes as a string, which could panic or leak plaintext-looking output.
+    // Keep ciphertext debug output as numeric bytes.
     let env = ChunkEnvelope {
         format_version: 1,
         vault_id: Uuid::from_u128(1),
@@ -14,7 +14,7 @@ fn chunk_envelope_debug_does_not_pretty_print_ciphertext_as_utf8_plaintext_marke
         ciphertext: b"plaintext-marker-should-not-appear-in-any-log".to_vec(),
     };
     let debug_str = format!("{env:?}");
-    // Debug on a Vec<u8> prints numeric bytes, not the UTF-8 string — assert this so nobody "improves" it into a lossy string print later.
+    // Keep ciphertext debug output as numeric bytes.
     assert!(!debug_str.contains("plaintext-marker-should-not-appear-in-any-log"));
     let _ = serialize_chunk_envelope(&env); // exercise serialization path too
 }

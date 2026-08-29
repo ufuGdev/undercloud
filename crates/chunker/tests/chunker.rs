@@ -17,7 +17,7 @@ async fn collect(data: &[u8], chunk_size: usize) -> Vec<Vec<u8>> {
 
 #[tokio::test]
 async fn zero_chunk_size_is_rejected_before_any_reading() {
-    // A zero-size buffer would make every read look like end-of-stream, silently truncating the input.
+    // A zero-size buffer would make every read look like end-of-stream.
     let err = chunk_stream(Cursor::new(vec![1, 2, 3]), 0).await;
     assert!(matches!(err, Err(ChunkerError::InvalidChunkSize(0))));
 }

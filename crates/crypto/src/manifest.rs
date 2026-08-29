@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::error::CryptoError;
 use crate::manifest_key::ManifestKey;
 
-/// Domain-separation byte for manifest AEAD AAD; chunk envelopes lack an equivalent since `ChunkIdentity::to_aad` predates this convention and its KAT vectors are pinned — new envelope types should follow this pattern, not the chunk one.
+/// Separates manifest ciphertext from other envelope types.
 const MANIFEST_ENVELOPE_TYPE: u8 = 0x02;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

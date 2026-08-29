@@ -515,7 +515,7 @@ async fn bytes_from(
     Ok(bytes)
 }
 
-/// Wraps a live HTTP response body as an [`ObjectStream`] so bytes flow straight to the caller instead of being buffered in RAM (`response.bytes()` would hold the whole object at once).
+/// Streams an HTTP response body without buffering the whole object.
 fn response_stream(response: Response) -> ObjectStream {
     let body = response.bytes_stream().map_err(std::io::Error::other);
     Box::pin(StreamReader::new(body))
@@ -698,7 +698,7 @@ impl CloudBackend for GoogleDriveProvider {
     async fn put(&self, locator: &str, bytes: Vec<u8>) -> Result<ObjectReceipt, ProviderError> {
         let token = self.0.token().await?;
         let metadata = serde_json::json!({"name": locator, "parents": ["appDataFolder"]});
-        // reqwest's `.multipart()` hardcodes `multipart/form-data`; Drive's multipart upload needs `multipart/related` (RFC 2387), hence the hand-built body.
+        // Build `multipart/related` because Drive rejects `multipart/form-data`.
         let boundary: String = rand::thread_rng()
             .sample_iter(&Alphanumeric)
             .take(48)

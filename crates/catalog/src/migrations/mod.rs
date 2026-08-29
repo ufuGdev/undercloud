@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Schema migration runner (ADR-003 "Migrations"); schema version is tracked via `PRAGMA user_version` rather than a separate tracking table that could itself get out of sync with reality.
+//! Runs schema migrations tracked by `PRAGMA user_version`.
 use rusqlite::Connection;
 
 use crate::error::CatalogError;
@@ -7,7 +7,7 @@ use crate::error::CatalogError;
 /// This crate's current target schema version. Bump when adding a new entry to [`MIGRATIONS`].
 pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
 
-/// Ordered `(version, sql)` pairs, each applied in order inside its own transaction to bring a database up to [`CURRENT_SCHEMA_VERSION`].
+/// Ordered migrations applied in transactions up to the current schema version.
 pub(crate) const MIGRATIONS: &[(u32, &str)] = &[
     (1, include_str!("0001_initial.sql")),
     (2, include_str!("0002_replica_uniqueness.sql")),
@@ -21,12 +21,12 @@ pub(crate) const MIGRATIONS: &[(u32, &str)] = &[
     (10, include_str!("0010_health_observation_latest_index.sql")),
 ];
 
-/// Applies every pending migration in [`MIGRATIONS`] to `conn`, bringing it to [`CURRENT_SCHEMA_VERSION`]; idempotent, a database already at the current version is left untouched.
+/// Applies pending migrations and leaves current databases unchanged.
 pub(crate) fn run(conn: &mut Connection) -> Result<(), CatalogError> {
     run_with(conn, MIGRATIONS, CURRENT_SCHEMA_VERSION)
 }
 
-/// Test-only entry point letting a test inject a deliberately-broken migration list against a caller-chosen target version, without adding a permanent public API for it.
+/// Test-only migration runner for injecting a failing migration.
 #[cfg(test)]
 pub(crate) fn run_migrations_for_test(
     conn: &mut Connection,
@@ -44,12 +44,11 @@ fn run_with(
     let current_version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
 
     if current_version == target_version {
-        // Idempotent re-open: nothing further to do.
         return Ok(());
     }
 
     if current_version > target_version {
-        // A database written by a newer build; refuse to open rather than guess which of the newer schema's assumptions still hold.
+        // Reject databases written by a newer schema version.
         return Err(CatalogError::UnsupportedSchemaVersion {
             found: current_version,
             max_supported: target_version,
@@ -61,7 +60,7 @@ fn run_with(
             continue;
         }
 
-        // Each migration runs inside its own transaction; `PRAGMA user_version` is only advanced as its last statement, so it only moves forward on full success and the original database is never destructively touched on failure.
+        // Advance the schema version only after each migration succeeds.
         let tx = conn.transaction()?;
 
         execute_migration(&tx, *version, sql).map_err(|source| CatalogError::MigrationFailed {
@@ -126,7 +125,7 @@ fn expected_duplicate_column(version: u32, statement: &str, source: &rusqlite::E
 mod tests {
     use super::*;
 
-    /// A migration failure must leave `PRAGMA user_version` exactly where the last *successful* migration left it, and the file must still open and migrate successfully afterward with a working set.
+    /// Ensures a failed migration leaves the schema version unchanged.
     #[test]
     fn migration_failure_leaves_user_version_unchanged_and_file_still_opens() {
         let dir = tempfile::tempdir().unwrap();
@@ -157,7 +156,6 @@ mod tests {
                  migration 2's failure must not have moved it further"
             );
         }
-        // Connection dropped: prove the file itself, not just the in-memory connection, is intact.
 
         let mut conn = Connection::open(&path).unwrap();
         let result = run_with(&mut conn, MIGRATIONS, CURRENT_SCHEMA_VERSION);
@@ -216,7 +214,7 @@ mod tests {
         assert_eq!(version, 0);
     }
 
-    /// Every index added by migration 4 must actually be selected by SQLite for the query that motivated it, guarding against it being silently dropped or mis-named so the planner ignores it.
+    /// Verifies migration 4 indexes are used by their motivating queries.
     #[test]
     fn migration_indexes_are_used_by_hot_queries() {
         let mut conn = Connection::open_in_memory().unwrap();

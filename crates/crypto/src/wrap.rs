@@ -14,7 +14,7 @@ const M_COST_KIB: u32 = 19_456;
 const T_COST: u32 = 2;
 const P_COST: u32 = 1;
 
-// Bounds for Argon2 params read from a persisted PasswordEnvelope; reject absurd values (e.g. tampered m_cost) before Params::new to avoid OOM/abort during unlock.
+// Reject absurd persisted Argon2 parameters before hashing.
 const MIN_M_COST_KIB: u32 = 8 * 1024; // 8 MiB
 const MAX_M_COST_KIB: u32 = 1024 * 1024; // 1 GiB
 const MIN_T_COST: u32 = 1;
@@ -22,13 +22,13 @@ const MAX_T_COST: u32 = 10;
 const MIN_P_COST: u32 = 1;
 const MAX_P_COST: u32 = 4;
 
-/// Current wire version of `PasswordEnvelope`; `unwrap_master_key` rejects mismatches before touching AEAD for a clear error instead of a confusing auth failure.
+/// Current password-envelope wire version; mismatches are rejected before AEAD.
 pub const PASSWORD_ENVELOPE_VERSION: u16 = 1;
 
-/// Domain-separation byte for password-envelope AEAD AAD (ADR-006), so its ciphertext can't be confused with another envelope type (e.g. file-key-wrap's 0x03).
+/// Separates password-envelope ciphertext from other envelope types.
 const PASSWORD_ENVELOPE_DOMAIN: u8 = 0x01;
 
-/// Key-envelope-type byte for "master key wrapped under a password-derived key", distinct from any future envelope type (e.g. a device-key envelope) with same-shaped AAD.
+/// Identifies the master-key envelope type in authenticated data.
 const KEY_ENVELOPE_TYPE_MASTER_KEY: u8 = 0x01;
 
 fn validate_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), CryptoError> {
@@ -41,7 +41,7 @@ fn validate_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), C
     Ok(())
 }
 
-/// A password-wrapped `MasterKey` bound via AAD to vault, version, and Argon2 params (ADR-006); no malformed-encoding tests exist here since Rust's types reject bad salt/nonce lengths at compile time — that concern belongs to the future flat-byte-stream serialization layer (Phase B).
+/// Password-wrapped master key bound to vault, version, and Argon2 parameters.
 #[derive(Debug, Clone)]
 pub struct PasswordEnvelope {
     pub vault_id: Uuid,
@@ -180,7 +180,7 @@ pub fn unwrap_master_key(
     Ok(MasterKey::from_bytes(bytes))
 }
 
-/// Boundary tests for `validate_argon2_params`, exercised via `unwrap_master_key` to prove the bounds check runs before Argon2; six separate assertions per the ruling not to collapse into one parameterized case.
+/// Verifies Argon2 parameter bounds before hashing.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,7 +191,7 @@ mod tests {
         wrap_master_key(vault_id, "correct horse battery staple", &key).unwrap()
     }
 
-    /// Asserts `unwrap_master_key` rejects the tampered envelope with `InvalidKeyLength` fast — a rough wall-clock bound as evidence Argon2 never ran, not a strict benchmark.
+    /// Confirms invalid parameters fail before Argon2 runs.
     fn assert_rejected_before_argon2_runs(envelope: &PasswordEnvelope) {
         let vault_id = Uuid::from_bytes([0x01; 16]);
         let start = std::time::Instant::now();

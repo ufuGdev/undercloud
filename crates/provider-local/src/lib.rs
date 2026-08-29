@@ -25,7 +25,7 @@ impl LocalProvider {
     }
 
     fn tmp_path(&self, locator: &ObjectLocator) -> PathBuf {
-        // Random suffix so concurrent put_object calls for the same locator write to distinct temp files instead of corrupting each other.
+        // Use distinct temp files for concurrent writes.
         self.root
             .join(format!("{}.{}.tmp", locator.0, uuid::Uuid::new_v4()))
     }
@@ -39,14 +39,14 @@ fn io_err_to_provider_err(err: std::io::Error) -> ProviderError {
     }
 }
 
-/// Validates a locator is a single safe path component before joining onto the storage root; runs unconditionally (not just debug_assert!) since a malformed/malicious ObjectLocator is untrusted input, not an internal invariant.
+/// Validates a locator before joining it to the storage root.
 fn validate_locator(locator: &ObjectLocator) -> Result<(), ProviderError> {
     let s = &locator.0;
-    // 200 leaves headroom under typical NAME_MAX (255) for tmp_path's appended ".{uuid_v4}.tmp" suffix (41 bytes), so an accepted locator also works as a temp filename.
+    // Leave room for the temporary-file suffix under NAME_MAX.
     if s.is_empty() || s.len() > 200 || s == "." || s == ".." {
         return Err(ProviderError::InvalidLocator);
     }
-    // list_objects/quota skip entries ending in ".tmp" (put_object's own in-flight temp suffix), so reserve that namespace here to avoid a storable-but-unlistable object.
+    // Reserve the temporary-file namespace from stored locators.
     if s.ends_with(".tmp") {
         return Err(ProviderError::InvalidLocator);
     }
@@ -56,7 +56,7 @@ fn validate_locator(locator: &ObjectLocator) -> Result<(), ProviderError> {
     if !safe_charset {
         return Err(ProviderError::InvalidLocator);
     }
-    // Defense in depth: also confirm the platform path parser sees exactly one Normal, non-traversal component.
+    // Confirm the platform parser sees one normal path component.
     let mut components = Path::new(s.as_str()).components();
     match (components.next(), components.next()) {
         (Some(std::path::Component::Normal(_)), None) => Ok(()),
@@ -64,7 +64,7 @@ fn validate_locator(locator: &ObjectLocator) -> Result<(), ProviderError> {
     }
 }
 
-/// Confirms `path` is not a symlink before use; a symlink planted inside the validated root could otherwise point anywhere on the filesystem, bypassing validate_locator entirely since it only inspects the locator string, not the resulting filesystem entry.
+/// Rejects symlinks before using a path inside the storage root.
 async fn check_no_symlink(path: &Path) -> Result<(), ProviderError> {
     match tokio::fs::symlink_metadata(path).await {
         Ok(meta) if meta.file_type().is_symlink() => Err(ProviderError::InvalidLocator),
@@ -130,7 +130,7 @@ impl StorageProvider for LocalProvider {
             .await
             .map_err(ProviderError::Io)?;
 
-        // Stream the body to the temp file instead of buffering it; nothing here needs the whole object in RAM.
+        // Stream into the temporary file to bound memory use.
         let mut written: u64 = 0;
         let mut buf = vec![0u8; 64 * 1024];
         let write_result: Result<(), ProviderError> = async {
@@ -190,7 +190,7 @@ impl StorageProvider for LocalProvider {
     )]
     async fn get_object(&self, request: GetObjectRequest) -> Result<ObjectStream, ProviderError> {
         if request.range.is_some() {
-            // capabilities() reports range_reads: false; silently returning the whole object would be fail-open.
+            // Reject range reads when the provider does not support them.
             return Err(ProviderError::Unsupported);
         }
         validate_locator(&request.locator)?;

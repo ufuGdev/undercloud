@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Keyed content-identity hash (ADR-006) of the whole plaintext before chunking, not the chunk sequence; a post-restore integrity check, never a substitute for per-chunk AEAD (ADR-002).
+//! Hashes whole plaintext before chunking; per-chunk AEAD remains authoritative.
 use crate::subkeys::ContentHashSubkey;
 
-/// Wraps a keyed `blake3::Hasher`; keyed by the vault's `ContentHashSubkey` so the digest can't be recomputed or forged without it.
+/// Wraps a keyed BLAKE3 hasher under the vault content-hash subkey.
 pub struct ContentHasher(blake3::Hasher);
 
 impl ContentHasher {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! End-to-end test: plaintext -> chunk -> encrypt -> wire-format -> LocalProvider -> retrieve -> parse/authenticate -> decrypt -> exact plaintext recovery, plus negative cases proving every tamper path fails closed; manifest bodies are AEAD-encrypted with a per-file `ManifestKey` whose AAD binds envelope type, format_version, vault_id, and file_version_id (deriving the key from the vault master key via subkey derivation instead of random minting remains Milestone 1 scope).
+//! End-to-end tests for encrypted object storage and recovery.
 use std::io::Cursor;
 
 use tempfile::tempdir;
@@ -24,7 +24,7 @@ use uuid::Uuid;
 const CHUNK_SIZE: usize = 64;
 
 fn synthetic_plaintext() -> Vec<u8> {
-    // 4 full chunks + 1 partial chunk, so multi-chunk and non-aligned-final-chunk are both covered in one file.
+    // Cover full, partial, and non-aligned chunks.
     (0..(CHUNK_SIZE * 4 + 17))
         .map(|i| (i % 251) as u8)
         .collect()
@@ -38,7 +38,7 @@ fn manifest_locator(file_version_id: Uuid) -> ObjectLocator {
     ObjectLocator(format!("manifest-{}", file_version_id.simple()))
 }
 
-/// Splits, encrypts, formats, and stores `plaintext` under a fresh vault_id/file_version_id/DEK, returning everything the restore path needs so tests can corrupt one piece before restoring.
+/// Builds encrypted test objects and returns restore metadata.
 struct StoredFile {
     provider: LocalProvider,
     dek: DataEncryptionKey,
@@ -46,7 +46,7 @@ struct StoredFile {
     vault_id: Uuid,
     file_version_id: Uuid,
     chunk_count: u64,
-    // Kept for symmetry with the fields callers need to reconstruct a StoredFile; restore_file() recomputes the hash from the fetched manifest instead of reading this field, so it's intentionally unread here.
+    // This field is intentionally unused by restore.
     #[allow(dead_code)]
     content_hash: [u8; 32],
 }
@@ -151,7 +151,7 @@ async fn get_bytes(
     Ok(buf)
 }
 
-/// Restores the full file: fetches the manifest, then every chunk in order, decrypting and concatenating; errors at the first failure rather than assembling a partial result.
+/// Restores and verifies all encrypted chunks in order.
 async fn restore_file(stored: &StoredFile) -> Result<Vec<u8>, String> {
     let manifest_bytes = get_bytes(&stored.provider, manifest_locator(stored.file_version_id))
         .await
@@ -210,8 +210,6 @@ async fn restore_file(stored: &StoredFile) -> Result<Vec<u8>, String> {
     Ok(plaintext)
 }
 
-// --- Positive case ---
-
 #[tokio::test]
 async fn full_pipeline_round_trips_multi_chunk_file_exactly() {
     let dir = tempdir().unwrap();
@@ -222,8 +220,6 @@ async fn full_pipeline_round_trips_multi_chunk_file_exactly() {
     let restored = restore_file(&stored).await.unwrap();
     assert_eq!(restored, plaintext);
 }
-
-// --- Negative cases ---
 
 #[tokio::test]
 async fn corrupted_ciphertext_byte_is_rejected() {
@@ -377,7 +373,7 @@ async fn modified_manifest_envelope_header_is_rejected() {
 
 #[tokio::test]
 async fn manifest_with_unsupported_critical_field_is_rejected_by_parser() {
-    // Targets FormatError::UnknownCriticalField: encryption/decryption succeed over the malformed TLV body since AEAD doesn't know TLV semantics; only parse_manifest_body rejects it, proving the two layers compose rather than one masking the other.
+    // AEAD succeeds before the malformed TLV body is parsed.
     let body = ManifestBody {
         file_size: 10,
         chunk_count: 1,
@@ -508,7 +504,7 @@ async fn missing_chunk_is_rejected() {
     );
 }
 
-/// Closes the semantic-tamper gap of a coordinated chunk_count + recomputed content_hash edit (previously a truncated file restored successfully): without the manifest key, the attacker cannot re-encrypt the edited body into a ciphertext that passes AEAD authentication.
+/// Prevents coordinated manifest edits from bypassing authenticated content checks.
 #[tokio::test]
 async fn manifest_body_semantic_tamper_is_rejected_by_aead_authentication() {
     let dir = tempdir().unwrap();
@@ -520,7 +516,7 @@ async fn manifest_body_semantic_tamper_is_rejected_by_aead_authentication() {
          at CHUNK_SIZE=64 (4 full chunks of 64 + 1 partial chunk of 17)"
     );
 
-    // Drop the last 2 of 5 chunks and recompute content_hash to match the truncated plaintext; without the manifest key the attacker can only write forged bytes, not a ciphertext that authenticates under the real key.
+    // A forged manifest cannot authenticate without the manifest key.
     let reduced_chunk_count: u32 = stored.chunk_count as u32 - 2; // 5 -> 3
     let truncated_len = reduced_chunk_count as usize * CHUNK_SIZE; // 192
     assert!(truncated_len < plaintext.len(), "must be a real truncation");
@@ -610,7 +606,7 @@ async fn modified_manifest_authentication_tag_is_rejected() {
     );
 }
 
-/// This schema has no separate "file_id" vs "file_version_id" concept, so substituting a manifest from a different file and substituting an earlier version of the same file are the same mechanism, both caught by the AAD's file_version_id binding.
+/// Manifest identity binding rejects cross-file and cross-version substitution.
 #[tokio::test]
 async fn manifest_copied_from_another_file_version_is_rejected() {
     let dir = tempdir().unwrap();
@@ -621,7 +617,7 @@ async fn manifest_copied_from_another_file_version_is_rejected() {
     let plaintext_b = b"a completely different file's content, also multi-chunk in size aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_vec();
     let stored_b = store_file(dir.path(), &plaintext_b).await;
 
-    // Take file A's fully-authentic manifest envelope bytes verbatim (not re-encrypted) and store them under file B's manifest locator.
+    // Use file A authenticated manifest at file B locator.
     let loc_a = manifest_locator(stored_a.file_version_id);
     let loc_b = manifest_locator(stored_b.file_version_id);
     let bytes_a = get_bytes(&stored_a.provider, loc_a).await.unwrap();
@@ -642,7 +638,6 @@ async fn manifest_copied_from_another_file_version_is_rejected() {
     );
 }
 
-// --- Multi-target replication / repair demonstration: crates/core's orchestration (SyncJob, RepairJob) is Milestone 1 scope; this proves the underlying mechanism sound using existing crates: replicate to 2 roots, lose one, restore from the survivor, repair without ever decrypting. ---
 #[tokio::test]
 async fn two_target_replication_survives_one_target_loss_and_repairs() {
     let base = tempdir().unwrap();
@@ -746,7 +741,7 @@ async fn two_target_replication_survives_one_target_loss_and_repairs() {
         "must restore exactly from the surviving target"
     );
 
-    // Repair: replace target A with a fresh empty root and copy every already-encrypted object from surviving target B to it, without ever decrypting during the copy.
+    // Copy authenticated objects during repair without decrypting them.
     let root_a_replacement = base.path().join("target-a-replacement");
     std::fs::create_dir_all(&root_a_replacement).unwrap();
     let provider_a_replacement = LocalProvider::new(&root_a_replacement);
@@ -774,7 +769,7 @@ async fn two_target_replication_survives_one_target_loss_and_repairs() {
         .await
         .unwrap();
 
-    // 2/2 replica coverage restored: both targets now independently authenticate and restore the exact original plaintext.
+    // Both targets now restore the authenticated plaintext.
     for root in [&root_a_replacement, &root_b] {
         let stored = StoredFile {
             provider: LocalProvider::new(root),

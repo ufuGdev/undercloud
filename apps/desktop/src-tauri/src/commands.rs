@@ -867,7 +867,7 @@ fn parse_id(value: &str) -> Result<Uuid, CommandError> {
     })
 }
 
-// file_name comes from the user-controlled catalog logical name, so reject traversal/absolute values (e.g. "../../evil.sh") before joining onto a destination directory.
+// Validate the catalog name before joining it to the restore destination.
 fn validate_restore_file_name(file_name: &str) -> Result<(), CommandError> {
     let mut components = Path::new(file_name).components();
     match (components.next(), components.next()) {

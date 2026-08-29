@@ -22,8 +22,6 @@ async fn put_ok(provider: &LocalProvider, loc: &ObjectLocator, body: &[u8]) {
         .unwrap();
 }
 
-// --- Malicious locators must be rejected on every entry point ---
-
 const MALICIOUS_LOCATORS: &[&str] = &[
     "../escape",
     "../../escape",
@@ -156,8 +154,6 @@ async fn traversal_locator_cannot_overwrite_or_delete_file_outside_root() {
     std::fs::remove_file(&victim_path).ok();
 }
 
-// --- Symlink escapes ---
-
 #[cfg(unix)]
 #[tokio::test]
 async fn symlink_in_root_pointing_outside_is_not_followed_for_read() {
@@ -224,8 +220,6 @@ async fn symlink_in_root_is_excluded_from_list_and_quota() {
     std::fs::remove_file(&outside_target).ok();
 }
 
-// --- A safe, ordinary locator must still work end to end ---
-
 #[tokio::test]
 async fn well_formed_locator_still_round_trips() {
     let dir = tempdir().unwrap();
@@ -245,13 +239,11 @@ async fn well_formed_locator_still_round_trips() {
     assert_eq!(got, b"perfectly normal opaque object bytes");
 }
 
-// --- Length bound must leave room for tmp_path's ".{uuid_v4}.tmp" suffix ---
-
 #[tokio::test]
 async fn locator_between_200_and_255_bytes_is_rejected_by_validate_locator_not_io_error() {
     let dir = tempdir().unwrap();
     let provider = LocalProvider::new(dir.path());
-    // 220 bytes: too long for the 200-byte bound, but would pass an old 255-byte bound and blow past NAME_MAX once tmp_path appends its 41-byte suffix, surfacing as a raw Io(ENAMETOOLONG) instead of a clean InvalidLocator rejection.
+    // Reject locators that leave no room for the temporary-file suffix.
     let long_name: String = "a".repeat(220);
     let result = provider
         .put_object(PutObjectRequest {
@@ -286,11 +278,9 @@ async fn locator_comfortably_under_new_bound_still_round_trips() {
     assert_eq!(got, b"still works fine");
 }
 
-// --- The ".tmp" locator namespace is reserved for put_object's in-flight temp files and must never be independently storable ---
-
 #[tokio::test]
 async fn locator_ending_in_dot_tmp_is_rejected_by_put_object() {
-    // list_objects/quota hide put_object's own in-flight "<locator>.{uuid}.tmp" files by skipping ".tmp"-suffixed entries; without this rejection a locator like "backup.tmp" would be storable but never listed or counted.
+    // Reserve the temporary-file namespace from stored locators.
     let dir = tempdir().unwrap();
     let provider = LocalProvider::new(dir.path());
     let result = provider
@@ -308,7 +298,7 @@ async fn locator_ending_in_dot_tmp_is_rejected_by_put_object() {
 
 #[tokio::test]
 async fn everything_put_object_accepts_is_returned_by_list_objects() {
-    // General form of the ".tmp" bug above: assert list_objects returns exactly the set of locators put_object accepted, no more, no less.
+    // Ensure listing returns exactly the accepted locators.
     let dir = tempdir().unwrap();
     let provider = LocalProvider::new(dir.path());
 

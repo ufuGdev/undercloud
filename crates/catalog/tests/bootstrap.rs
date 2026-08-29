@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Integration tests for `CatalogBootstrap`, migrations, and connection-level durability configuration (ADR-003).
+//! Integration tests for catalog bootstrap and connection durability.
 use uuid::Uuid;
 
 use undercloud_catalog::{CatalogBootstrap, CatalogError};
@@ -22,7 +22,6 @@ async fn migrations_apply_cleanly_on_a_fresh_file_backed_db() {
         "opening a fresh catalog must apply migrations without error"
     );
 
-    // No vault created yet: reads on the correctly created schema report NotFound, not a schema-level error.
     let bootstrap = bootstrap.expect("checked above");
     assert!(matches!(
         bootstrap.vault_id().await,
@@ -47,7 +46,6 @@ async fn reopening_an_already_migrated_db_is_idempotent() {
             .await
             .expect("create_vault must succeed");
     }
-    // `bootstrap` (and its executor) is dropped here, closing the connection.
 
     let bootstrap = CatalogBootstrap::open(&path)
         .await
@@ -87,7 +85,7 @@ async fn user_version_newer_than_target_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("catalog.sqlite3");
 
-    // Manually stamp a fresh, empty database file with a user_version higher than this crate's target, before CatalogBootstrap ever touches it.
+    // Reject databases written by a newer schema version.
     {
         let conn = rusqlite::Connection::open(&path).expect("raw open");
         conn.pragma_update(None, "user_version", 999_999)
@@ -106,8 +104,6 @@ async fn user_version_newer_than_target_is_rejected() {
         other => panic!("expected UnsupportedSchemaVersion, got {other:?}"),
     }
 }
-
-// The foreign-key-enforcement test genuinely proving this crate's own executor connection enforces `PRAGMA foreign_keys = ON` lives as a unit test in `bootstrap.rs` instead, since it needs a `#[cfg(test)]`-gated accessor this integration-test crate can't see.
 
 #[cfg(unix)]
 #[tokio::test]

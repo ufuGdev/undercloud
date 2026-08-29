@@ -489,7 +489,7 @@ pub enum FileHealth {
     Degraded,
     AtRisk,
     Unrecoverable,
-    // Never constructed anywhere in this crate today; apps/desktop/src-tauri/src/commands.rs still maps a status string for it, so this is a live but currently unreachable frontend branch, not a bug.
+    // Keep this variant for the desktop status mapping.
     ProviderUnavailable,
     HealthCheckTimedOut,
 }
@@ -1131,7 +1131,7 @@ impl VaultSession {
     }
     pub async fn list_files(&self) -> Result<Vec<FileSummary>, CoreError> {
         let logical_files = self.catalog.list_logical_files().await?;
-        // Each file's health check does its own network round trips, so check several files concurrently (order preserved by `buffered`).
+        // Check files concurrently; `buffered` preserves result order.
         futures_util::stream::iter(logical_files.into_iter().map(|file| async move {
             let health = match file.current_version_id {
                 Some(version) => Some(
@@ -2043,7 +2043,7 @@ async fn open_vault_with_store(
     path: &Path,
     credential_store: Arc<dyn CredentialStore>,
 ) -> Result<LockedVault, CoreError> {
-    // CatalogBootstrap::open creates the file if missing (needed by create_vault_with_store), so guard here or a missing vault silently becomes an empty one.
+    // Guard the missing-vault case before opening an empty catalog.
     if !path.exists() {
         return Err(CoreError::VaultNotFound);
     }
@@ -2350,7 +2350,7 @@ where
         return Err(CoreError::ProviderUnavailable);
     }
     targets.truncate(2);
-    // Reserve the idempotency key first: the UNIQUE constraint on sync_jobs.idempotency_key closes the race a plain look-then-insert cannot, and the pending/running row it creates lets startup crash-recovery find and fail an upload interrupted mid-flight (the only thing that makes it retryable via reclaim_failed_sync_job below).
+    // Reserve the unique idempotency row so startup can reclaim interrupted uploads.
     let job_id = match session
         .catalog
         .find_sync_job_by_idempotency_key(key)
@@ -2367,7 +2367,7 @@ where
             if matches!(existing.state.as_str(), "pending" | "running") {
                 return Err(CoreError::InvalidTransition);
             }
-            // Previous attempt failed outright with no committed file version: reclaim it for this retry (the state='failed' guard inside reclaim makes this a compare-and-swap, so two racing retries can't both win).
+            // Reclaim only failed, uncommitted jobs; the state guard makes this a compare-and-swap.
             if !session.catalog.reclaim_failed_sync_job(existing.id).await? {
                 return Err(CoreError::InvalidTransition);
             }
@@ -2384,7 +2384,7 @@ where
         },
     };
 
-    // ---- Prepare phase (memory only): mint every identifier/wrapped key up front so replication needs no catalog writes, and the catalog is only touched in the final commit transaction, so a failure mid-upload leaves no orphaned rows.
+    // Prepare all identifiers and keys before the provider writes.
     let version = Uuid::new_v4();
     let dek = generate_dek();
     let manifest_key = generate_manifest_key();
@@ -2408,7 +2408,7 @@ where
         .set_sync_job_state(job_id, "running")
         .await?;
 
-    // ---- Replicate phase (providers only, no catalog writes): tracks every object written so it can be deleted on later failure, compensating for remote storage's lack of transactionality.
+    // Record each provider write so a later failure can compensate.
     let mut uploaded: Vec<UploadedObject> = Vec::new();
     let replicated = replicate_upload(
         session,
@@ -2436,14 +2436,12 @@ where
 
     let index = u32::try_from(chunk_ids.len()).map_err(|_| CoreError::Unrecoverable)?;
 
-    // ---- Commit phase (single catalog transaction): either every row for this upload lands at once, or none do. Uses live-connected count (not health()/repair()'s registered count) since upload only ever targets connected providers.
     let required = required_replicas(index.saturating_add(1), targets.len());
     let name_owned = logical_name.to_owned();
     let uploaded_for_commit = uploaded.clone();
     let commit: Result<Uuid, _> = session
         .catalog
         .transaction(move |tx| {
-            // The logical-file row is created here, so its id comes from the transaction method itself.
             let actual_file = tx.create_logical_file(folder_id, &name_owned, None)?;
             tx.create_file_version(version, actual_file, total, index, hash)?;
             tx.set_current_version(actual_file, version)?;
@@ -2490,7 +2488,7 @@ where
             logical_file_id: actual_file,
         }),
         Err(e) => {
-            // Commit failed (e.g. disk full): blobs must not linger on the providers, and the reserved job must not stay "running" forever.
+            // Remove uploaded blobs and release the reserved job after a failed commit.
             cleanup_uploaded(&session.catalog, &session.providers, job_id, &uploaded).await;
             let _ = session.catalog.set_sync_job_state(job_id, "failed").await;
             Err(e.into())
@@ -2498,7 +2496,7 @@ where
     }
 }
 
-/// One object successfully written to one storage target during replication, awaiting its catalog row in the commit phase.
+/// An uploaded object awaiting its catalog row.
 #[derive(Clone)]
 struct UploadedObject {
     tracking_id: Option<Uuid>,
@@ -2534,7 +2532,7 @@ async fn cleanup_uploaded(
     let _ = catalog.set_sync_job_state(job, "failed").await;
 }
 
-/// Streams `source` through the chunker, encrypts each chunk, and replicates every object (chunks + manifest) to all targets; no catalog writes happen here, and each successful write is appended to `uploaded` so a later failure can compensate.
+/// Encrypts and replicates a source without catalog writes.
 #[allow(clippy::too_many_arguments)]
 async fn replicate_upload<R>(
     session: &VaultSession,
@@ -2584,8 +2582,7 @@ where
             ciphertext: encrypted.ciphertext,
         });
         let chunk_id = Uuid::new_v4();
-        // Puts to each target run concurrently (independent locators, independent providers); every successful one
-        // is still recorded even if a sibling target fails, so `uploaded` stays complete for rollback.
+        // Record every successful concurrent put so rollback stays complete.
         let mut pending = Vec::with_capacity(targets.len());
         for target in targets {
             let loc = locator();
@@ -2751,7 +2748,7 @@ async fn restore_file(
             .await?;
         let chunks = session.catalog.list_chunks(version).await?;
         let mut hash = ContentHasher::new(&session.subkeys.content_hash);
-        // Per-request provider latency dominates over bandwidth, so fetch chunks concurrently (order preserved by `buffered`).
+        // Fetch chunks concurrently while `buffered` preserves file order.
         let reps_ref = &reps;
         let dek_ref = &dek;
         let cancel_ref = &cancel;
@@ -2829,7 +2826,7 @@ async fn restore_file(
     result
 }
 
-/// Fires only on the 1→2 target transition; runs fully detached, never holding the Tauri command lock.
+/// Runs detached after the first additional target connects.
 fn spawn_backfill_if_needed(session: &VaultSession) {
     // Fires only on the exact 1->2 transition, not every subsequent connect (2->3, ...),
     // otherwise it races an in-flight manual repair for the same file version.
@@ -2880,7 +2877,7 @@ async fn health(session: &VaultSession, version: Uuid) -> Result<FileHealth, Cor
     .map_err(crypto_err)?;
     let chunks = session.catalog.list_chunks(version).await?;
     let reps = session.catalog.list_replicas(version).await?;
-    // Each replica's verification is a full content fetch + decrypt against its provider, so verify replicas concurrently.
+    // Verify replicas concurrently; each check fetches and decrypts the full object.
     let (v_ref, chunks_ref, dek_ref, mk_ref) = (&v, &chunks, &dek, &mk);
     let mut verify_futures: Vec<VerifyFuture<'_>> = Vec::new();
     for r in &reps {
@@ -2923,7 +2920,7 @@ async fn health(session: &VaultSession, version: Uuid) -> Result<FileHealth, Cor
             VerifyOutcome::Unavailable => {}
         }
     }
-    // Registered target count, not live-connected: a disconnected target must still count toward the requirement.
+    // Count registered targets so offline replicas still degrade health honestly.
     let target_count = session.storage_target_ids().await?.len();
     let required = required_replicas(v.chunk_count.saturating_add(1), target_count);
     record_health_state(session, version, verified, required).await
@@ -3132,7 +3129,7 @@ async fn repair_to_target(
 const REPAIR_FETCH_CONCURRENCY: usize = 6;
 const DELETE_ITEM_CONCURRENCY: usize = 6;
 
-/// Copies every AEAD-authenticated object of `version` from the source target to the replacement target, verifying each copy end-to-end.
+/// Copies and verifies authenticated objects to a replacement target.
 async fn repair_replicas(
     session: &VaultSession,
     version: Uuid,
@@ -3148,7 +3145,7 @@ async fn repair_replicas(
         .providers
         .get(&replacement)
         .ok_or(CoreError::ProviderUnavailable)?;
-    // Unwrap the file's keys exactly once, up front — they are the same for every replica of this file version.
+    // Unwrap the shared file keys once before copying replicas.
     let (wrapped_dek, wrapped_manifest) = session.catalog.load_wrapped_file_keys(version).await?;
     let dek = unwrap_dek(
         &session.subkeys.file_key_wrap,
@@ -3170,8 +3167,8 @@ async fn repair_replicas(
         .iter()
         .filter(|r| r.storage_target_id == source && r.state == ReplicaState::Verified)
         .map(Ok::<_, CoreError>);
-    // Each replica's copy is a read-verify-write-readback pipeline dominated by provider round trips, not CPU, so
-    // run several replicas' pipelines concurrently instead of paying that latency once per replica in series.
+    // Run replica pipelines concurrently because provider round trips dominate.
+    // Run replica pipelines concurrently because provider round trips dominate.
     futures_util::stream::iter(candidates)
         .try_for_each_concurrent(Some(REPAIR_FETCH_CONCURRENCY), |r| async move {
             let loc = ObjectLocator(r.locator.clone());
@@ -3224,7 +3221,7 @@ async fn repair_replicas(
                 .map(|existing| ObjectLocator(existing.locator.clone()))
                 .unwrap_or_else(locator);
             let stored_locator = put(target, destination_locator, bytes.clone()).await?;
-            // Size-only checks cannot see silent corruption; read the replica back and require it to match, byte for byte, the AEAD-verified bytes just written.
+            // Read back each copy and compare it with the authenticated source bytes.
             let stored = read(target, &stored_locator).await?;
             if stored != bytes {
                 return Err(CoreError::Authentication);

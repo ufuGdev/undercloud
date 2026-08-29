@@ -36,7 +36,7 @@ pub fn parse_manifest_envelope(bytes: &[u8]) -> Result<ManifestEnvelope, FormatE
         return Err(FormatError::InvalidMagic);
     }
     let format_version = u16::from_be_bytes([bytes[4], bytes[5]]);
-    // Versioning policy: readers accept any version <= MANIFEST_FORMAT_VERSION and reject newer ones, writers always emit the current version; add a parse branch here (keeping old ones) when a new version is introduced.
+    // Readers accept current and older versions; writers emit only the current version.
     if format_version == 0 || format_version > MANIFEST_FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion(format_version));
     }
@@ -53,8 +53,6 @@ pub fn parse_manifest_envelope(bytes: &[u8]) -> Result<ManifestEnvelope, FormatE
         ciphertext,
     })
 }
-
-// --- TLV inner body (the plaintext structure, before/after encryption) ---
 
 const TAG_FILE_SIZE: u16 = 0x0001;
 const TAG_CHUNK_COUNT: u16 = 0x0002;

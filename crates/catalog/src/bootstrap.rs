@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `CatalogBootstrap`: locked-state handle that can only reach `vaults`/`key_envelopes`; [`CatalogBootstrap::unlock`] is the only way to obtain `UnlockedCatalog`, which can reach every other table (ADR-003 "Locked bootstrap vs. unlocked catalog").
+//! Locked catalog handle; unlock is the only path to full catalog access.
 use std::path::Path;
 
 use rusqlite::{params, types::Type, Error as SqliteError};
@@ -12,13 +12,13 @@ use crate::executor::{CatalogExecutor, CatalogExecutorHandle};
 use crate::open_and_migrate;
 use crate::unlocked::UnlockedCatalog;
 
-/// The locked-state catalog handle: obtained via [`CatalogBootstrap::open`], can only read `vault_id`/`catalog_format_version`/`password_envelope` and write the initial `vaults`/`key_envelopes` rows via [`CatalogBootstrap::create_vault`] — every other table is structurally unreachable from this type.
+/// Provides bootstrap-only catalog access until unlock.
 #[derive(Debug, Clone)]
 pub struct CatalogBootstrap {
     executor: CatalogExecutorHandle,
 }
 
-/// A `QueryReturnedNoRows` from a single-row lookup becomes `CatalogError::NotFound`; anything else passes through unchanged.
+/// Maps an empty single-row lookup to `CatalogError::NotFound`.
 fn no_rows_to_not_found(err: SqliteError) -> CatalogError {
     match err {
         SqliteError::QueryReturnedNoRows => CatalogError::NotFound,
@@ -26,7 +26,7 @@ fn no_rows_to_not_found(err: SqliteError) -> CatalogError {
     }
 }
 
-/// A stored value didn't fit the Rust type expected to read it (e.g. an unparseable UUID column); reported as `Sqlite(InvalidColumnType)` rather than a made-up variant, since this can only happen to a file not written by this crate.
+/// Reports incompatible stored values as `InvalidColumnType`.
 fn invalid_column(column: &str, expected: Type) -> CatalogError {
     CatalogError::Sqlite(SqliteError::InvalidColumnType(
         0,
@@ -43,7 +43,7 @@ fn u32_from_i64(value: i64, column: &str) -> Result<u32, CatalogError> {
     u32::try_from(value).map_err(|_| invalid_column(column, Type::Integer))
 }
 
-/// Millisecond Unix timestamp as a decimal string; `created_at` columns are non-sensitive and informational-only in Milestone 1 (ADR-003 "Non-sensitive fields"), so no date/time dependency or parse-back is needed.
+/// Stores creation time as a non-sensitive millisecond Unix timestamp.
 fn now_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -55,7 +55,7 @@ fn now_timestamp() -> String {
 }
 
 impl CatalogBootstrap {
-    /// Opens (creating if necessary) the catalog database at `path`, applying migrations, and spawns the dedicated [`CatalogExecutor`] thread; run inside `tokio::task::spawn_blocking` since `CatalogExecutor::spawn` itself blocks on synchronous file/migration I/O (ADR-003 "Concurrency") — a one-time cost, unlike the steady-state [`CatalogExecutorHandle::call`] path.
+    /// Opens the catalog and applies migrations on the executor thread.
     pub async fn open(path: &Path) -> Result<Self, CatalogError> {
         let path = path.to_path_buf();
         let executor = tokio::task::spawn_blocking(move || {
@@ -66,7 +66,7 @@ impl CatalogBootstrap {
         Ok(Self { executor })
     }
 
-    /// Reads `vaults.catalog_format_version`. `NotFound` if no vault has been created yet (see [`Self::create_vault`]).
+    /// Reads the catalog format version.
     pub async fn catalog_format_version(&self) -> Result<u16, CatalogError> {
         self.executor
             .call(|conn| {
@@ -94,7 +94,7 @@ impl CatalogBootstrap {
             .await
     }
 
-    /// Reads the single `key_envelopes` row joined to `vaults` and reconstructs a `PasswordEnvelope`; `NotFound` if no vault has been created yet. Already self-authenticated by construction (ADR-006), so stored and returned as-is with no additional field-envelope wrapping (ADR-003 "Fields already self-authenticated").
+    /// Loads the authenticated password envelope from the bootstrap tables.
     pub async fn password_envelope(&self) -> Result<PasswordEnvelope, CatalogError> {
         self.executor
             .call(|conn| {
@@ -164,7 +164,7 @@ impl CatalogBootstrap {
             .await
     }
 
-    /// Writes the initial `vaults` + `key_envelopes` rows in one transaction; bootstrap-only because `password_envelope` is already self-authenticated ciphertext (ADR-006), needing no `CatalogFieldSubkey` or field-level encryption.
+    /// Creates the initial vault and password-envelope rows atomically.
     pub async fn create_vault(
         &self,
         vault_id: Uuid,
@@ -208,7 +208,7 @@ impl CatalogBootstrap {
             .await
     }
 
-    /// Consumes this locked-state handle to produce [`UnlockedCatalog`] (the only path there, requiring an already-typed [`CatalogFieldSubkey`] that per ADR-006 can only come from `derive_vault_subkeys`); deliberately implemented via [`Self::vault_id`] rather than a second `vaults.id` query, so there is exactly one place that reads it. The subkey itself is never validated here — a wrong one is accepted and only fails closed on the first actual field decrypt.
+    /// Unlocks the catalog with the supplied field subkey.
     pub async fn unlock(
         self,
         catalog_field_subkey: CatalogFieldSubkey,
@@ -224,7 +224,7 @@ impl CatalogBootstrap {
 
 #[cfg(test)]
 impl CatalogBootstrap {
-    /// Test-only escape hatch: runs `f` directly against this bootstrap's real production-configured executor connection, bypassing the narrow public API, so tests can prove invariants (e.g. `PRAGMA foreign_keys = ON`) about the actual connection rather than a second independent one.
+    /// Runs a test closure against the production-configured executor connection.
     pub(crate) async fn call_raw_for_test<F, T>(&self, f: F) -> Result<T, CatalogError>
     where
         F: FnOnce(&mut rusqlite::Connection) -> Result<T, CatalogError> + Send + 'static,
@@ -238,7 +238,7 @@ impl CatalogBootstrap {
 mod tests {
     use super::*;
 
-    // Deliberately a unit test (needs `call_raw_for_test`, cfg(test)-gated) exercising the real executor connection, so it genuinely fails if `open_and_migrate`'s `PRAGMA foreign_keys = ON` is ever removed.
+    // Use the production executor connection to verify foreign-key enforcement.
     #[tokio::test]
     async fn foreign_key_violation_is_rejected_on_the_real_executor_connection() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -248,7 +248,7 @@ mod tests {
             .await
             .expect("open must succeed");
 
-        // storage_targets.vault_id references vaults.id, which this bogus id doesn't; must fail with a foreign-key violation iff enforcement is genuinely active.
+        // This invalid vault ID must trigger a foreign-key violation.
         let result = bootstrap
             .call_raw_for_test(|conn| {
                 conn.execute(

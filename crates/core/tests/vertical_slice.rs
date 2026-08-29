@@ -107,7 +107,7 @@ async fn vertical_slice_survives_restart_loss_restore_and_repair() {
     let _ = target_b;
 }
 
-/// A source replica whose bytes no longer authenticate must abort the repair with an authentication error (corruption never copied to the replacement target) and must not leave the repair job stuck "running".
+/// Corrupt replicas abort repair and leave the job recoverable.
 #[tokio::test]
 async fn repair_refuses_to_propagate_corrupted_source_replica() {
     let temp = tempfile::tempdir().unwrap();
@@ -142,7 +142,7 @@ async fn repair_refuses_to_propagate_corrupted_source_replica() {
         .await
         .unwrap();
 
-    // Flip one byte inside a chunk's ciphertext on BOTH targets so the repair's chosen source is guaranteed corrupted; size stays identical, so only AEAD can catch this.
+    // Keep sizes equal so only AEAD detects the corruption.
     for root in [&root_a, &root_b] {
         let chunk_path = std::fs::read_dir(root)
             .unwrap()
@@ -163,7 +163,7 @@ async fn repair_refuses_to_propagate_corrupted_source_replica() {
     );
 }
 
-/// When the second target starts failing part way through an upload, the catalog commit must land no rows and every blob already written to the healthy target must be deleted again — no orphans; a later retry with both targets healthy then succeeds.
+/// Failed uploads leave no rows and clean up written blobs.
 #[tokio::test]
 async fn failed_upload_leaves_no_catalog_rows_and_no_orphan_blobs() {
     let temp = tempfile::tempdir().unwrap();
@@ -187,7 +187,7 @@ async fn failed_upload_leaves_no_catalog_rows_and_no_orphan_blobs() {
     session.add_local_provider(&root_a).await.unwrap();
     session.add_local_provider(&root_b).await.unwrap();
 
-    // Sabotage target B: replace its directory with a plain file so its very next write fails deterministically.
+    // Replace target B with a file so its next write fails.
     std::fs::remove_dir_all(&root_b).unwrap();
     std::fs::write(&root_b, b"not a directory anymore").unwrap();
 
@@ -312,7 +312,7 @@ async fn health_required_replica_count_matches_connected_target_count() {
     );
 
     session.add_local_provider(&root_b).await.unwrap();
-    // Never copied to the new target: now under-replicated (1 chunk + manifest = 2 verified, required = (1+1)*2 = 4).
+    // The replacement target remains under-replicated.
     assert_eq!(
         session.health(upload.file_version_id).await.unwrap(),
         FileHealth::Degraded
@@ -500,7 +500,7 @@ async fn repair_recovers_after_a_target_flaps_offline_during_a_health_check() {
     );
 
     // Target B flaps offline; a health check running in that window must demote its replica
-    // instead of crashing, and the file must read as still-recoverable (Degraded), not Unrecoverable.
+    // Preserve recoverability after the target goes offline.
     session.disconnect_provider(target_b);
     assert_eq!(
         session.health(upload.file_version_id).await.unwrap(),
@@ -522,7 +522,7 @@ async fn repair_recovers_after_a_target_flaps_offline_during_a_health_check() {
 
 /// Reproduces the real-world "2 storage accounts connected, repair still says provider_unavailable"
 /// report in its exact form: the file is already fully verified on both connected targets (nothing
-/// to move), yet the user clicks Repair anyway. Must report Healthy, not fail with provider_unavailable.
+/// Repairing an already healthy file remains successful.
 #[tokio::test]
 async fn repair_on_an_already_fully_protected_file_reports_healthy_instead_of_erroring() {
     let temp = tempfile::tempdir().unwrap();
@@ -631,7 +631,7 @@ async fn connecting_a_second_target_automatically_backfills_existing_files() {
     assert_eq!(std::fs::read(&restored).unwrap(), original);
 }
 
-/// Reopening a database with a pre-fix `current_version_id = NULL` row must run migration 5 and backfill it, restoring `list_files()` visibility.
+/// Migration 5 restores visibility for legacy rows with a missing version ID.
 #[tokio::test]
 async fn migration_backfills_current_version_id_for_pre_existing_null_rows() {
     let temp = tempfile::tempdir().unwrap();
@@ -666,7 +666,7 @@ async fn migration_backfills_current_version_id_for_pre_existing_null_rows() {
     session.lock();
     drop(core);
 
-    // Roll the on-disk state back to pre-migration-5: null the column and rewind the schema version stamp.
+    // Recreate the pre-migration state for the backfill test.
     {
         let conn = rusqlite::Connection::open(&catalog).unwrap();
         conn.execute("UPDATE logical_files SET current_version_id = NULL", [])

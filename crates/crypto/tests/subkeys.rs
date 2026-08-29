@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Behavioral tests for HKDF-SHA256 vault subkey derivation (ADR-006); KAT vectors pinning exact bytes live in tests/kat.rs, this file proves structural properties.
+//! Behavioral tests for HKDF-SHA256 vault subkey derivation.
 use undercloud_crypto::{derive_vault_subkeys, MasterKey};
 use uuid::Uuid;
 

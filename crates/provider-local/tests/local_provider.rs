@@ -91,7 +91,7 @@ async fn list_objects_returns_all_puts() {
 
 #[tokio::test]
 async fn put_is_atomic_no_partial_file_visible_via_head_before_completion() {
-    // A crashed/interrupted write must not leave a half-written object that head_object reports as present.
+    // Interrupted writes must not appear as complete objects.
     let dir = tempdir().unwrap();
     let provider = LocalProvider::new(dir.path());
     let locator = ObjectLocator("atomic-test".into());
@@ -118,7 +118,7 @@ async fn put_is_atomic_no_partial_file_visible_via_head_before_completion() {
 
 #[tokio::test]
 async fn get_object_with_range_returns_unsupported() {
-    // capabilities() advertises range_reads: false; get_object must fail closed rather than silently returning the whole object.
+    // Reject range reads when the provider does not support them.
     let dir = tempdir().unwrap();
     let provider = LocalProvider::new(dir.path());
     let locator = ObjectLocator("ranged".into());

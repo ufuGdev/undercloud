@@ -8,7 +8,7 @@ pub const CHUNK_FORMAT_VERSION: u16 = 1;
 
 const HEADER_LEN: usize = 4 + 2 + 16 + 16 + 8 + 24; // 70 bytes
 
-/// A parsed, on-disk chunk envelope — security: its fields come from untrusted bytes, never build `ChunkIdentity` from them directly, always look it up from the manifest's chunk list.
+/// Parsed chunk-envelope fields are untrusted; use catalog identity for restore decisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkEnvelope {
     pub format_version: u16,
@@ -31,7 +31,7 @@ pub fn serialize_chunk_envelope(env: &ChunkEnvelope) -> Vec<u8> {
     out
 }
 
-/// Parses the on-disk chunk envelope header + ciphertext; see the security note on [`ChunkEnvelope`] about not building `ChunkIdentity` from the returned fields.
+/// Parses a chunk envelope without trusting its embedded identity.
 pub fn parse_chunk_envelope(bytes: &[u8]) -> Result<ChunkEnvelope, FormatError> {
     if bytes.len() < HEADER_LEN {
         return Err(FormatError::Truncated);
@@ -40,7 +40,7 @@ pub fn parse_chunk_envelope(bytes: &[u8]) -> Result<ChunkEnvelope, FormatError> 
         return Err(FormatError::InvalidMagic);
     }
     let format_version = u16::from_be_bytes([bytes[4], bytes[5]]);
-    // Versioning policy: readers accept any version <= CHUNK_FORMAT_VERSION and reject newer ones, writers always emit the current version; add a parse branch here (keeping old ones) when a new version is introduced.
+    // Readers accept current and older versions; writers emit only the current version.
     if format_version == 0 || format_version > CHUNK_FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion(format_version));
     }

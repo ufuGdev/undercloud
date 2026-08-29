@@ -1297,7 +1297,7 @@ impl UnlockedCatalog {
         let k = key.to_owned();
         self.executor.call(move|x|{let r=x.query_row("SELECT id,file_version_id,job_kind,state,idempotency_key FROM sync_jobs WHERE idempotency_key=?1 AND vault_id=?2",params![k,v],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)));match r{Ok((i,f,j,s,k))=>Ok(Some(SyncJobRecord{id:id(i)?,file_version_id:f.map(id).transpose()?,job_kind:JobKind::parse(&j)?,state:s,idempotency_key:k})),Err(rusqlite::Error::QueryReturnedNoRows)=>Ok(None),Err(e)=>Err(e.into())}}).await
     }
-    /// Atomically reclaims a job that previously failed outright, flipping it back to "pending" only if still "failed"; if two retries race, only one `UPDATE` matches the guard and returns `true`, the loser sees `false` and must treat the key as a live duplicate.
+    /// Reclaims a failed job only if it is still failed.
     pub async fn reclaim_failed_sync_job(&self, job: Uuid) -> Result<bool, CatalogError> {
         let v = self.vault_id.to_string();
         self.executor
@@ -1803,7 +1803,7 @@ impl<'a> CatalogTransaction<'a> {
         Ok(())
     }
 
-    /// Inserts a replica row that is already verified, for callers that only commit to the catalog *after* every object replica has been written and checked at its storage target.
+    /// Inserts a replica after its provider object has been verified.
     pub fn create_replica_verified(
         &mut self,
         version: Uuid,
@@ -1829,7 +1829,7 @@ impl<'a> CatalogTransaction<'a> {
         Ok(())
     }
 
-    /// Transitions a sync job reserved earlier (before replication started) to "completed" and links it to the file version the commit just created.
+    /// Completes a reserved sync job and links its file version.
     pub fn mark_sync_job_completed(
         &mut self,
         job: Uuid,

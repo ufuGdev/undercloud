@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Wraps per-file `DataEncryptionKey`/`ManifestKey` under the vault's `FileKeyWrapSubkey` for persistence (ADR-006); keys are still generated randomly elsewhere, this module only wraps/unwraps them for storage.
+//! Wraps randomly generated per-file keys under the vault file-key subkey.
 use chacha20poly1305::aead::{Aead, KeyInit, OsRng as AeadOsRng, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::RngCore;
@@ -13,17 +13,17 @@ use crate::subkeys::FileKeyWrapSubkey;
 /// Current wire version of the per-file key wrap AAD.
 const FILE_KEY_WRAP_VERSION: u16 = 1;
 
-/// Domain-separation byte for per-file key wrap AEAD AAD, so its ciphertext can't be confused with another envelope type (password's 0x01, manifest's 0x02).
+/// Separates file-key-wrap ciphertext from other envelope types.
 const FILE_KEY_WRAP_DOMAIN: u8 = 0x03;
 
-/// Distinguishes a wrapped `DataEncryptionKey` from a wrapped `ManifestKey`; the explicit discriminants double as the AAD's key-type byte.
+/// Distinguishes wrapped data and manifest keys in the authenticated AAD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKeyType {
     Dek = 0x01,
     ManifestKey = 0x02,
 }
 
-/// A per-file `DataEncryptionKey` or `ManifestKey`, wrapped under the vault's `FileKeyWrapSubkey` and bound via AAD to key type, `vault_id`, and `file_version_id` (ADR-006).
+/// A per-file key bound to its vault, file version, and key type.
 #[derive(Debug, Clone)]
 pub struct WrappedFileKey {
     pub key_type: FileKeyType,
@@ -78,7 +78,7 @@ fn unwrap_key_bytes(
     expected_type: FileKeyType,
     wrapped: &WrappedFileKey,
 ) -> Result<[u8; 32], CryptoError> {
-    // Explicit type check before decryption for a fast, clear rejection; AAD mismatch would also fail closed, both checks are deliberate.
+    // Check the key type before decryption for a clear failure.
     if wrapped.key_type != expected_type {
         return Err(CryptoError::AuthenticationFailed);
     }
@@ -103,7 +103,7 @@ fn unwrap_key_bytes(
         .map_err(|_| CryptoError::InvalidKeyLength)
 }
 
-/// Wraps `dek` under `subkey`, bound to `vault_id`/`file_version_id`; assumes `dek` already randomly generated, never accepts a caller-supplied nonce.
+/// Wraps a data-encryption key with identity-bound AAD.
 pub fn wrap_dek(
     subkey: &FileKeyWrapSubkey,
     vault_id: Uuid,
@@ -119,7 +119,7 @@ pub fn wrap_dek(
     )
 }
 
-/// Unwraps `wrapped` as a `DataEncryptionKey`; returns `CryptoError::AuthenticationFailed` on wrong key type, mismatched `vault_id`/`file_version_id`, or AEAD failure.
+/// Unwraps a data-encryption key and rejects identity or authentication failures.
 pub fn unwrap_dek(
     subkey: &FileKeyWrapSubkey,
     vault_id: Uuid,
@@ -130,7 +130,7 @@ pub fn unwrap_dek(
     Ok(DataEncryptionKey::from_bytes(bytes))
 }
 
-/// Wraps `key` under `subkey`, bound to `vault_id`/`file_version_id`; assumes `key` already randomly generated, never accepts a caller-supplied nonce.
+/// Wraps a manifest key with identity-bound AAD.
 pub fn wrap_manifest_key(
     subkey: &FileKeyWrapSubkey,
     vault_id: Uuid,
@@ -146,7 +146,7 @@ pub fn wrap_manifest_key(
     )
 }
 
-/// Unwraps `wrapped` as a `ManifestKey`; returns `CryptoError::AuthenticationFailed` on wrong key type, mismatched `vault_id`/`file_version_id`, or AEAD failure.
+/// Unwraps a manifest key and rejects identity or authentication failures.
 pub fn unwrap_manifest_key(
     subkey: &FileKeyWrapSubkey,
     vault_id: Uuid,

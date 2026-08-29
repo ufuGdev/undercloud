@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `FieldEnvelope`: versioned wire format `version:u16(BE) || nonce:24B || ciphertext` (min 26 bytes, else [`CatalogError::Truncated`]) storing every sensitive catalog field, AAD-bound to `domain(0x04) || version || vault_id || entity_type || entity_id || field_tag` recomputed fresh by the caller (ADR-003 "Field-encryption envelope"; domain byte continues ADR-006/ADR-002's sequence); `chacha20poly1305` is a direct dependency here rather than a new generic function in `crates/crypto`, since that crate's API is deliberately type-specific and this crate's AAD needs catalog-schema concepts crypto shouldn't know about.
+//! Field envelopes encrypt sensitive catalog fields with identity-bound AAD.
 use chacha20poly1305::aead::{Aead, KeyInit, OsRng as AeadOsRng};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::RngCore;
@@ -9,7 +9,7 @@ use undercloud_crypto::{CatalogFieldSubkey, CryptoError};
 
 use crate::error::CatalogError;
 
-/// Which table a field-encrypted value belongs to; fixed byte constants (not table-name strings, per ADR-003) so a future SQL rename can't silently change what an already-encrypted field authenticates against.
+/// Identifies the table bound into field-envelope authentication.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityType {
@@ -37,10 +37,10 @@ pub enum FieldTag {
 /// The one and only field-envelope wire format version this crate currently supports.
 pub const FIELD_ENVELOPE_VERSION: u16 = 1;
 
-/// Domain-separation byte for a catalog field envelope's AAD, continuing this codebase's sequence: `0x01` password envelope, `0x02` manifest, `0x03` file-key-wrap (ADR-006/ADR-002).
+/// Domain-separation byte for catalog field-envelope AAD.
 const FIELD_ENVELOPE_DOMAIN: u8 = 0x04;
 
-/// Fixed length of the envelope's header (2-byte version + 24-byte nonce); a shorter blob cannot contain a valid envelope.
+/// Fixed header length; shorter values cannot contain a valid envelope.
 const FIELD_ENVELOPE_HEADER_LEN: usize = 2 + 24;
 
 fn field_envelope_aad(
@@ -60,7 +60,7 @@ fn field_envelope_aad(
     aad
 }
 
-/// Encrypts `plaintext` under `subkey`, bound via AAD to `vault_id`/`entity_type`/`entity_id`/`field_tag`, returning `version(2 BE) || nonce(24) || ciphertext`; the nonce is generated internally via the OS CSPRNG, mirroring every other AEAD construction in this codebase — no caller-supplied nonce parameter.
+/// Encrypts plaintext with AAD binding its catalog identity and field tag.
 pub fn encrypt_field(
     subkey: &CatalogFieldSubkey,
     vault_id: Uuid,
@@ -99,7 +99,7 @@ pub fn encrypt_field(
     Ok(envelope)
 }
 
-/// Decrypts a `FieldEnvelope`, recomputing the AAD from caller-supplied `vault_id`/`entity_type`/`entity_id`/`field_tag` (never read back from the blob except `envelope_version`); rejects a too-short blob as [`CatalogError::Truncated`] and a mismatched version as [`CatalogError::UnsupportedFieldEnvelopeVersion`], both before any AEAD call, and any AEAD failure as an undifferentiated [`CatalogError::Encryption`].
+/// Decrypts after recomputing AAD from trusted catalog identity fields.
 pub fn decrypt_field(
     subkey: &CatalogFieldSubkey,
     vault_id: Uuid,

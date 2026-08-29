@@ -17,12 +17,12 @@ use crate::providers::CloudProviderKind;
 
 /// Timeout for establishing the TCP/TLS connection.
 pub(crate) const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Idle-read timeout: aborts when no bytes arrive for this long, so a hung/stalled connection cannot freeze a backup indefinitely.
+/// Aborts stalled connections that stop delivering bytes.
 pub(crate) const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(60);
-/// Total per-request cap, sized to cover a full chunk-sized (6 MiB default) upload/download on a slow link; the read timeout is the primary defense against dead connections.
+/// Caps total request time independently of the idle-read timeout.
 pub(crate) const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// The shared HTTP client for OAuth exchanges and cloud API traffic; every request carries explicit timeouts — never construct `reqwest::Client` directly (its defaults have no timeouts at all).
+/// Shared HTTP client with explicit request timeouts.
 pub(crate) fn http_client() -> Client {
     Client::builder()
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
@@ -543,7 +543,7 @@ async fn parse_token_response(
 }
 
 fn token_exchange_kind(error: Option<&str>, description: Option<&str>) -> TokenExchangeKind {
-    // Unambiguous codes Google returns take priority over the free-text description; only "invalid_request" (and unrecognized/absent codes) are vague enough that the description is the only way to tell what went wrong.
+    // Prefer Google error codes; use descriptions only for ambiguous responses.
     match error {
         Some("invalid_grant") => return TokenExchangeKind::InvalidGrant,
         Some("invalid_client") => return TokenExchangeKind::InvalidClient,

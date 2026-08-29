@@ -3,7 +3,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::secret::SecretBytes;
 
-/// Key that authenticates/encrypts a manifest envelope's body; nominally distinct from `DataEncryptionKey`, minted randomly per file (not derived from the master key, per ADR-006) and wrapped via file_key_wrap for persistence.
+/// Key that authenticates a manifest body and is wrapped for persistence.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ManifestKey(SecretBytes<32>);
 

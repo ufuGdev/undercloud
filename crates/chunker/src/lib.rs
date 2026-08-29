@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Bounded-memory streaming chunker; the 6 MiB default chunk size (per master build prompt section 6) keeps AEAD/network overhead low while capping steady-state buffering at ~24 MiB via the capacity-4 channel below.
+//! Bounded-memory streaming chunker with a fixed-size channel for backpressure.
 mod error;
 
 pub use error::ChunkerError;
@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 pub const DEFAULT_CHUNK_SIZE: usize = 6 * 1024 * 1024;
 const CHANNEL_CAPACITY: usize = 4;
 
-/// Reads `reader` and emits fixed-size chunks (last chunk may be shorter) on a bounded channel (backpressure once `CHANNEL_CAPACITY` is buffered); rejects `chunk_size` 0 before any task is spawned, since a zero-size buffer would silently truncate the input as spurious end-of-stream.
+/// Emits fixed-size chunks with bounded backpressure; rejects a zero chunk size.
 pub async fn chunk_stream<R>(
     mut reader: R,
     chunk_size: usize,

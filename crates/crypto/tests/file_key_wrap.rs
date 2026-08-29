@@ -87,7 +87,7 @@ fn cross_file_version_substitution_is_rejected() {
     assert!(unwrap_dek(&subkey, vault_id(), file_version_b, &wrapped_for_a).is_err());
 }
 
-/// A `WrappedFileKey` produced by `wrap_dek` must be rejected by `unwrap_manifest_key` (explicit user ruling).
+/// Rejects a data-key wrapper passed to manifest-key unwrapping.
 #[test]
 fn wrapped_dek_is_rejected_by_unwrap_manifest_key() {
     let subkey = subkey();
@@ -96,7 +96,7 @@ fn wrapped_dek_is_rejected_by_unwrap_manifest_key() {
     assert!(unwrap_manifest_key(&subkey, vault_id(), file_version_id(), &wrapped).is_err());
 }
 
-/// The reverse: a `WrappedFileKey` produced by `wrap_manifest_key` must be rejected by `unwrap_dek`.
+/// Rejects a manifest-key wrapper passed to data-key unwrapping.
 #[test]
 fn wrapped_manifest_key_is_rejected_by_unwrap_dek() {
     let subkey = subkey();
@@ -124,7 +124,6 @@ fn two_wraps_of_same_key_use_different_nonces_and_ciphertext() {
 
 #[test]
 fn key_type_byte_matches_documented_discriminant() {
-    // Sanity check that WrappedFileKey exposes key_type/nonce/ciphertext and round-trips through construction, independent of wrap/unwrap.
     let wrapped = WrappedFileKey {
         key_type: undercloud_crypto::FileKeyType::Dek,
         nonce: [0u8; 24],

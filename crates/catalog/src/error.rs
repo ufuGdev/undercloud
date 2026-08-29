@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `CatalogError`: the single error type for every fallible `crates/catalog` operation; no variant's `Display` message includes a bound SQL parameter or row data, only structural information safe to log or surface.
+//! Catalog errors expose structural details without SQL parameters or row data.
 use thiserror::Error;
 
 /// Errors returned by `crates/catalog`'s public API.
 #[derive(Debug, Error)]
 pub enum CatalogError {
-    /// A `rusqlite`-reported error not covered by a more specific variant below (e.g. a constraint violation, a connection error).
+    /// A SQLite error without a more specific catalog variant.
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
-    /// A migration's SQL failed to apply; its transaction is rolled back by SQLite before this error is constructed, so `PRAGMA user_version` is left exactly as it was before this migration started (ADR-003 "Migrations").
+    /// A migration failed and its transaction was rolled back.
     #[error("migration {version} failed: {source}")]
     MigrationFailed {
         version: u32,
         source: rusqlite::Error,
     },
 
-    /// `PRAGMA user_version` on open was greater than this crate's target schema version (written by a newer build); refused outright rather than guessing which of the newer schema's assumptions still hold.
+    /// The database schema is newer than this crate supports.
     #[error(
         "catalog schema version {found} is newer than the {max_supported} this build supports"
     )]
@@ -26,11 +26,11 @@ pub enum CatalogError {
     #[error("not found")]
     NotFound,
 
-    /// A `FieldEnvelope` blob was shorter than the fixed 26-byte header it must contain before any ciphertext; rejected before any AEAD call is attempted.
+    /// A field envelope was too short to contain its header.
     #[error("field envelope truncated")]
     Truncated,
 
-    /// A `FieldEnvelope`'s `envelope_version` did not match the one version this crate currently supports.
+    /// A field envelope used an unsupported version.
     #[error("unsupported field envelope version: {found}")]
     UnsupportedFieldEnvelopeVersion { found: u16 },
 
@@ -38,11 +38,11 @@ pub enum CatalogError {
     #[error("encryption error: {0}")]
     Encryption(#[from] undercloud_crypto::CryptoError),
 
-    /// The `CatalogExecutor` background thread could not be started, or is no longer accepting/answering jobs (e.g. it panicked) — the actor-thread machinery failing outright, not a SQLite error (ADR-003 "Concurrency").
+    /// The catalog executor could not start or accept jobs.
     #[error("catalog executor is unavailable")]
     ExecutorUnavailable,
 
-    /// A filesystem operation on the catalog file itself failed (e.g. metadata, Unix permission bits) — distinct from `Sqlite`, since these are plain `std::io::Error`s from outside `rusqlite`.
+    /// A catalog-file filesystem operation failed.
     #[error("catalog file I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -54,7 +54,7 @@ pub enum CatalogError {
 }
 
 impl CatalogError {
-    /// True for a UNIQUE/PRIMARY KEY constraint violation reported by SQLite (e.g. two concurrent uploads racing on an idempotency key), false for any other failure.
+    /// Returns whether the error is a uniqueness constraint violation.
     pub fn is_unique_violation(&self) -> bool {
         matches!(
             self,

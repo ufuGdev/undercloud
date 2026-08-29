@@ -186,7 +186,7 @@ async fn transaction_rolls_back_intermediate_records() {
         })
         .await;
     assert!(matches!(result, Err(CatalogError::InvariantViolation)));
-    // The only public deterministic check: the transaction's insert had no externally visible ID after the closure returned an error.
+    // Confirm the failed transaction exposed no inserted ID.
 }
 
 #[tokio::test]
