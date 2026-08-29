@@ -1426,6 +1426,41 @@ pub async fn list_files(
     end_session(&state, session).await;
     Ok(result?.into_iter().map(file_dto).collect())
 }
+
+#[derive(Debug, Serialize)]
+pub struct FilePageDto {
+    pub files: Vec<FileDto>,
+    /// Pass as `after` on the next call to continue; `None` means this was
+    /// the last page.
+    pub next_cursor: Option<String>,
+}
+
+/// Keyset-paginated file listing (task-perf.md 7 pagination requirement).
+/// `after` is the `next_cursor` from a previous page, or `None`/absent for
+/// the first page. `limit` is clamped to [1, 1000] so a caller cannot
+/// request an unbounded page.
+#[tauri::command]
+pub async fn list_files_page(
+    state: State<'_, AppState>,
+    operation_id: String,
+    after: Option<String>,
+    limit: u32,
+) -> Result<FilePageDto, CommandError> {
+    let _span = command_span("list_files_page", &operation_id);
+    let after = after.map(|a| parse_id(&a)).transpose()?;
+    let limit = limit.clamp(1, 1000);
+    let session = begin_session(&state).await?;
+    let result = session.list_files_page(after, limit).await.map_err(command_error);
+    end_session(&state, session).await;
+    let files = result?;
+    let next_cursor = (files.len() as u32 == limit)
+        .then(|| files.last().map(|f| f.logical_file_id.to_string()))
+        .flatten();
+    Ok(FilePageDto {
+        files: files.into_iter().map(file_dto).collect(),
+        next_cursor,
+    })
+}
 fn file_dto(file: FileSummary) -> FileDto {
     FileDto {
         logical_file_id: file.logical_file_id.to_string(),
@@ -1589,10 +1624,10 @@ pub async fn prepare_file_deletion(
     }
     let file_id = parse_id(&file_id)?;
     let session = begin_session(&state).await?;
-    let active = session.list_files_cached().await.map_err(command_error)?;
+    let active = session.file_summary(file_id).await.map_err(command_error)?;
     let trash = session.list_trash().await.map_err(command_error)?;
     let (file, state_name) =
-        if let Some(file) = active.into_iter().find(|f| f.logical_file_id == file_id) {
+        if let Some(file) = active {
             (file, "active".to_owned())
         } else if let Some(item) = trash
             .into_iter()
@@ -1715,11 +1750,13 @@ pub async fn confirm_file_deletion(
         });
     }
     let session = begin_session(&state).await?;
-    let current = session.list_files_cached().await.map_err(command_error)?;
+    let current = session
+        .file_summary(challenge.file_id)
+        .await
+        .map_err(command_error)?;
     let current_trash = session.list_trash().await.map_err(command_error)?;
     let current_state = current
-        .iter()
-        .find(|file| file.logical_file_id == challenge.file_id)
+        .as_ref()
         .map(|file| ("active", file.file_version_id))
         .or_else(|| {
             current_trash

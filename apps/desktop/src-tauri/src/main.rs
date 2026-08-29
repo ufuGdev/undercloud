@@ -36,6 +36,7 @@ fn main() {
             commands::rename_provider,
             commands::activity_events,
             commands::list_files,
+            commands::list_files_page,
             commands::protection_map,
             commands::list_trash,
             commands::prepare_file_deletion,

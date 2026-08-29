@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use crate::error::CatalogError;
 
 /// This crate's current target schema version. Bump when adding a new entry to [`MIGRATIONS`].
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 /// Ordered `(version, sql)` pairs, each applied in order inside its own transaction to bring a database up to [`CURRENT_SCHEMA_VERSION`].
 pub(crate) const MIGRATIONS: &[(u32, &str)] = &[
@@ -18,6 +18,7 @@ pub(crate) const MIGRATIONS: &[(u32, &str)] = &[
     (7, include_str!("0007_deletion_lifecycle.sql")),
     (8, include_str!("0008_sync_job_objects.sql")),
     (9, include_str!("0009_recovery_freshness.sql")),
+    (10, include_str!("0010_health_observation_latest_index.sql")),
 ];
 
 /// Applies every pending migration in [`MIGRATIONS`] to `conn`, bringing it to [`CURRENT_SCHEMA_VERSION`]; idempotent, a database already at the current version is left untouched.
@@ -249,6 +250,10 @@ mod tests {
             (
                 "SELECT * FROM storage_targets WHERE vault_id = 'x'",
                 "idx_storage_targets_vault",
+            ),
+            (
+                "SELECT id FROM health_observations WHERE file_version_id = 'x' ORDER BY observed_at DESC, id DESC LIMIT 1",
+                "idx_health_observations_file_version_latest",
             ),
         ];
 

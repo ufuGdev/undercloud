@@ -855,7 +855,7 @@ pub async fn import(
             oauth_flow: undercloud_provider_cloud::OAuthFlow::new(),
             oauth_registry: undercloud_provider_cloud::OAuthApplicationRegistry::official(),
             background_cancel: CancellationToken::new(),
-            repair_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            repair_locks: crate::KeyedLock::new(),
         })
     }
     .await;

@@ -101,7 +101,7 @@ async fn user_version_newer_than_target_is_rejected() {
             max_supported,
         }) => {
             assert_eq!(found, 999_999);
-            assert_eq!(max_supported, 9);
+            assert_eq!(max_supported, 10);
         }
         other => panic!("expected UnsupportedSchemaVersion, got {other:?}"),
     }

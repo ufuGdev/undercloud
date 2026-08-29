@@ -14,10 +14,10 @@ pub use field_envelope::{
 };
 pub use unlocked::{
     ActivityEventRecord, CatalogSnapshot, CatalogTransaction, ChunkRecord, DeletionItemRecord,
-    DeletionJobRecord, FileVersionRecord, HealthObservationRecord, HealthState, JobKind,
-    LogicalFileRecord, LogicalFolderRecord, NewActivityEvent, ObjectKind, RecoveryFreshnessRecord,
-    RepairJobRecord, ReplicaRecord, ReplicaState, StorageTargetRecord, SyncJobObjectRecord,
-    SyncJobRecord, UnlockedCatalog,
+    DeletionJobRecord, FileSummaryRow, FileVersionRecord, HealthObservationRecord, HealthState,
+    JobKind, LogicalFileRecord, LogicalFolderRecord, NewActivityEvent, ObjectKind,
+    RecoveryFreshnessRecord, RepairJobRecord, ReplicaLite, ReplicaRecord, ReplicaState,
+    StorageTargetRecord, SyncJobObjectRecord, SyncJobRecord, UnlockedCatalog,
 };
 
 use std::path::Path;
@@ -35,6 +35,21 @@ pub(crate) fn open_and_migrate(path: &Path) -> Result<Connection, CatalogError> 
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "synchronous", "FULL")?;
+    // Page-cache/memory-map sizing only — no durability or consistency
+    // impact, unlike `synchronous`/`journal_mode` above. Bounded constants
+    // (not scaling with catalog size): 20 MiB page cache, up to 256 MiB
+    // memory-mapped I/O for large scans (SQLite falls back to normal I/O
+    // beyond that transparently, and unsupported platforms/filesystems
+    // ignore `mmap_size` safely per SQLite's own documented behavior).
+    // `cache_size` is negative here deliberately: negative means "size in
+    // KiB", positive would mean "number of pages" — this is 20,000 KiB
+    // (~19.5 MiB), not 20,000 pages (~80 MiB at the default 4 KiB page
+    // size). Applied identically to every connection this executor ever
+    // opens (there is exactly one, opened once in `open_and_migrate`).
+    // Isolated effect measured separately from the query/index change —
+    // see the performance report's cache/mmap isolation table.
+    conn.pragma_update(None, "cache_size", -20_000i64)?;
+    conn.pragma_update(None, "mmap_size", 268_435_456i64)?;
 
     #[cfg(unix)]
     if created_by_this_call {

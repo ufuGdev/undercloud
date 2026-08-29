@@ -122,6 +122,130 @@ pub struct HealthObservationRecord {
     pub health_state: HealthState,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSummaryRow {
+    pub id: Uuid,
+    pub name: String,
+    pub mime: Option<String>,
+    pub current_version_id: Option<Uuid>,
+    pub file_size: Option<u64>,
+    pub chunk_count: Option<u32>,
+    pub verified_replica_count: Option<u32>,
+    pub required_replica_count: Option<u32>,
+    pub last_verified_at: Option<String>,
+    pub health_state: Option<HealthState>,
+}
+type SummaryTuple = (
+    String,
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+);
+
+/// Shared row-shape for `list_file_summary_rows`, `list_file_summary_row`,
+/// and `list_file_summary_page` -- all three select the same ten columns.
+fn row_to_summary_tuple(r: &rusqlite::Row) -> rusqlite::Result<SummaryTuple> {
+    Ok((
+        r.get::<_, String>(0)?,
+        r.get::<_, Vec<u8>>(1)?,
+        r.get::<_, Option<Vec<u8>>>(2)?,
+        r.get::<_, Option<String>>(3)?,
+        r.get::<_, Option<i64>>(4)?,
+        r.get::<_, Option<i64>>(5)?,
+        r.get::<_, Option<i64>>(6)?,
+        r.get::<_, Option<i64>>(7)?,
+        r.get::<_, Option<String>>(8)?,
+        r.get::<_, Option<String>>(9)?,
+    ))
+}
+
+/// Decrypts and converts one [`row_to_summary_tuple`] result into a
+/// [`FileSummaryRow`]; shared decrypt/convert logic for every caller of
+/// the summary query so they cannot silently diverge.
+fn summary_tuple_to_row(
+    t: SummaryTuple,
+    key: &CatalogFieldSubkey,
+    vault: Uuid,
+) -> Result<FileSummaryRow, CatalogError> {
+    let (
+        id_s,
+        name,
+        mime,
+        current,
+        size,
+        chunk_count,
+        verified,
+        required,
+        observed_at,
+        health_state,
+    ) = t;
+    let i = id(id_s)?;
+    Ok(FileSummaryRow {
+        id: i,
+        name: String::from_utf8(field_envelope::decrypt_field(
+            key,
+            vault,
+            EntityType::LogicalFile,
+            i,
+            FieldTag::Name,
+            &name,
+        )?)
+        .map_err(|_| CatalogError::InvalidState)?,
+        mime: mime
+            .map(|m| {
+                field_envelope::decrypt_field(
+                    key,
+                    vault,
+                    EntityType::LogicalFile,
+                    i,
+                    FieldTag::Mime,
+                    &m,
+                )
+            })
+            .transpose()?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| CatalogError::InvalidState)?,
+        current_version_id: current.map(id).transpose()?,
+        file_size: size
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| CatalogError::InvalidState)?,
+        chunk_count: chunk_count
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| CatalogError::InvalidState)?,
+        verified_replica_count: verified
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| CatalogError::InvalidState)?,
+        required_replica_count: required
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| CatalogError::InvalidState)?,
+        last_verified_at: observed_at,
+        health_state: health_state.map(|s| HealthState::parse(&s)).transpose()?,
+    })
+}
+
+/// Replica fields needed for bulk protection-map computation, without the
+/// per-row locator decryption `ReplicaRecord` pays for — the locator is
+/// never used by that computation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaLite {
+    pub file_version_id: Uuid,
+    pub chunk_id: Option<Uuid>,
+    pub storage_target_id: Uuid,
+    pub object_kind: ObjectKind,
+    pub state: ReplicaState,
+    pub last_verified_at: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryFreshnessRecord {
     pub generation: u64,
     pub exported_generation: Option<u64>,
@@ -357,6 +481,43 @@ impl std::fmt::Debug for UnlockedCatalog {
     }
 }
 impl UnlockedCatalog {
+    /// Returns the `EXPLAIN QUERY PLAN` rows for the `list_file_summary_rows`
+    /// query, as `(id, parent, detail)` triples — a diagnostic hook for
+    /// performance tests to assert the correlated-subquery plan stays
+    /// index-assisted (no `SCAN` on `health_observations` or `chunks`) as
+    /// catalog scale grows, instead of trusting wall-clock timing alone.
+    pub async fn explain_file_summary_query_plan(&self) -> Result<Vec<String>, CatalogError> {
+        let v = self.vault_id.to_string();
+        self.executor
+            .call(move |x| {
+                let mut s = x.prepare(
+                    "EXPLAIN QUERY PLAN SELECT lf.id, lf.name_envelope, lf.mime_envelope, lf.current_version_id, \
+                     fv.file_size, fv.chunk_count, ho.verified_replica_count, ho.required_replica_count, \
+                     ho.observed_at, ho.health_state \
+                     FROM logical_files lf \
+                     LEFT JOIN file_versions fv ON fv.id = lf.current_version_id \
+                     LEFT JOIN health_observations ho ON ho.id = ( \
+                         SELECT id FROM health_observations \
+                         WHERE file_version_id = lf.current_version_id \
+                         ORDER BY observed_at DESC, id DESC LIMIT 1) \
+                     WHERE lf.vault_id = ?1 AND lf.lifecycle_state = 'active' ORDER BY lf.id",
+                )?;
+                let rows = s.query_map([v], |r| r.get::<_, String>(3))?;
+                rows.map(|r| r.map_err(Into::into)).collect()
+            })
+            .await
+    }
+    /// Number of completed executor round trips (`call()` invocations) so
+    /// far on this handle; a diagnostic/test counter, not a production
+    /// dependency. See [`Self::reset_round_trip_count`].
+    pub fn round_trip_count(&self) -> u64 {
+        self.executor.round_trip_count()
+    }
+    /// Zeroes the round-trip counter, so a test/benchmark can measure just
+    /// the calls made by one subsequent operation.
+    pub fn reset_round_trip_count(&self) {
+        self.executor.reset_round_trip_count()
+    }
     pub async fn recovery_freshness(&self) -> Result<RecoveryFreshnessRecord, CatalogError> {
         let vault = self.vault_id.to_string();
         self.executor.call(move |x| {
@@ -601,6 +762,122 @@ impl UnlockedCatalog {
                     lifecycle_state,
                 })
             }).collect()
+        }).await
+    }
+    /// Single-round-trip listing: logical file metadata, current version
+    /// size, and the latest durable health observation, batched in one
+    /// query instead of two catalog round trips per file. Rows whose
+    /// current version has no health observation yet report `None` for
+    /// health fields; the caller falls back to a live protection-map
+    /// lookup only for those.
+    // (helper functions row_to_summary_tuple / summary_tuple_to_row are
+    // defined at module scope below, shared by list_file_summary_rows,
+    // list_file_summary_row, and list_file_summary_page.)
+    /// Keyset-paginated form of [`Self::list_file_summary_rows`]: `after`
+    /// is the last-seen `id` from the previous page (`None` for the first
+    /// page), `limit` bounds the row count. Ordered by `lf.id` (already
+    /// this table's primary key and the sort the unpaginated query uses),
+    /// so pagination is stable under concurrent inserts/deletes elsewhere
+    /// in the catalog -- a row's position never shifts relative to ids
+    /// already returned, and a newly inserted row with a smaller id than
+    /// `after` is correctly never reintroduced on a later page.
+    pub async fn list_file_summary_page(
+        &self,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<FileSummaryRow>, CatalogError> {
+        let v = self.vault_id.to_string();
+        let vault = self.vault_id;
+        let key = self.catalog_field_subkey.clone();
+        let after = after.map(|u| u.to_string());
+        let limit = i64::from(limit);
+        self.executor.call(move |x| {
+            let base = "SELECT lf.id, lf.name_envelope, lf.mime_envelope, lf.current_version_id, \
+                 fv.file_size, fv.chunk_count, ho.verified_replica_count, ho.required_replica_count, \
+                 ho.observed_at, ho.health_state \
+                 FROM logical_files lf \
+                 LEFT JOIN file_versions fv ON fv.id = lf.current_version_id \
+                 LEFT JOIN health_observations ho ON ho.id = ( \
+                     SELECT id FROM health_observations \
+                     WHERE file_version_id = lf.current_version_id \
+                     ORDER BY observed_at DESC, id DESC LIMIT 1) \
+                 WHERE lf.vault_id = ?1 AND lf.lifecycle_state = 'active'";
+            let rows = if let Some(after) = &after {
+                let sql = format!("{base} AND lf.id > ?2 ORDER BY lf.id LIMIT ?3");
+                let mut s = x.prepare(&sql)?;
+                let mapped = s
+                    .query_map(params![v, after, limit], row_to_summary_tuple)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                mapped
+            } else {
+                let sql = format!("{base} ORDER BY lf.id LIMIT ?2");
+                let mut s = x.prepare(&sql)?;
+                let mapped = s
+                    .query_map(params![v, limit], row_to_summary_tuple)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                mapped
+            };
+            rows.into_iter()
+                .map(|row| summary_tuple_to_row(row, &key, vault))
+                .collect()
+        })
+        .await
+    }
+    pub async fn list_file_summary_rows(&self) -> Result<Vec<FileSummaryRow>, CatalogError> {
+        let v = self.vault_id.to_string();
+        let vault = self.vault_id;
+        let key = self.catalog_field_subkey.clone();
+        self.executor.call(move |x| {
+            let mut s = x.prepare(
+                "SELECT lf.id, lf.name_envelope, lf.mime_envelope, lf.current_version_id, \
+                 fv.file_size, fv.chunk_count, ho.verified_replica_count, ho.required_replica_count, \
+                 ho.observed_at, ho.health_state \
+                 FROM logical_files lf \
+                 LEFT JOIN file_versions fv ON fv.id = lf.current_version_id \
+                 LEFT JOIN health_observations ho ON ho.id = ( \
+                     SELECT id FROM health_observations \
+                     WHERE file_version_id = lf.current_version_id \
+                     ORDER BY observed_at DESC, id DESC LIMIT 1) \
+                 WHERE lf.vault_id = ?1 AND lf.lifecycle_state = 'active' ORDER BY lf.id",
+            )?;
+            let rows = s.query_map([v], row_to_summary_tuple)?;
+            rows.map(|r| summary_tuple_to_row(r?, &key, vault)).collect()
+        })
+        .await
+    }
+    /// Single-file variant of [`Self::list_file_summary_rows`]: the same
+    /// query narrowed to one logical file id, so a point lookup costs one
+    /// indexed round trip instead of fetching (or client-side scanning)
+    /// the entire vault listing.
+    pub async fn list_file_summary_row(
+        &self,
+        file: Uuid,
+    ) -> Result<Option<FileSummaryRow>, CatalogError> {
+        let v = self.vault_id.to_string();
+        let f = file.to_string();
+        let vault = self.vault_id;
+        let key = self.catalog_field_subkey.clone();
+        self.executor.call(move |x| {
+            let row = x
+                .query_row(
+                    "SELECT lf.id, lf.name_envelope, lf.mime_envelope, lf.current_version_id, \
+                     fv.file_size, fv.chunk_count, ho.verified_replica_count, ho.required_replica_count, \
+                     ho.observed_at, ho.health_state \
+                     FROM logical_files lf \
+                     LEFT JOIN file_versions fv ON fv.id = lf.current_version_id \
+                     LEFT JOIN health_observations ho ON ho.id = ( \
+                         SELECT id FROM health_observations \
+                         WHERE file_version_id = lf.current_version_id \
+                         ORDER BY observed_at DESC, id DESC LIMIT 1) \
+                     WHERE lf.vault_id = ?1 AND lf.lifecycle_state = 'active' AND lf.id = ?2",
+                    params![v, f],
+                    row_to_summary_tuple,
+                )
+                .optional()?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            summary_tuple_to_row(row, &key, vault).map(Some)
         }).await
     }
     pub async fn create_logical_file(
@@ -1161,6 +1438,97 @@ impl UnlockedCatalog {
         }).await
     }
 
+    /// Batched form of [`Self::list_chunks`] for bulk protection-map
+    /// fallback: one query for every version in `versions` instead of one
+    /// executor round trip each.
+    pub async fn list_chunks_for_versions(
+        &self,
+        versions: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, Vec<ChunkRecord>>, CatalogError> {
+        if versions.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let ids: Vec<String> = versions.iter().map(Uuid::to_string).collect();
+        self.executor
+            .call(move |x| {
+                let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT id,file_version_id,chunk_index FROM chunks WHERE file_version_id IN ({placeholders}) ORDER BY file_version_id,chunk_index,id"
+                );
+                let mut s = x.prepare(&sql)?;
+                let params: Vec<&dyn rusqlite::ToSql> =
+                    ids.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let rows = s.query_map(params.as_slice(), |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })?;
+                let mut out: std::collections::HashMap<Uuid, Vec<ChunkRecord>> =
+                    std::collections::HashMap::new();
+                for row in rows {
+                    let (chunk_id, version_id, index) = row?;
+                    let chunk_id = id(chunk_id)?;
+                    let version_id = id(version_id)?;
+                    out.entry(version_id).or_default().push(ChunkRecord {
+                        id: chunk_id,
+                        file_version_id: version_id,
+                        chunk_index: u32::try_from(index).map_err(|_| CatalogError::InvalidState)?,
+                    });
+                }
+                Ok(out)
+            })
+            .await
+    }
+    /// Batched replica fetch for bulk protection-map fallback. Skips
+    /// locator decryption entirely (unused by that computation), unlike
+    /// [`Self::list_replicas`].
+    pub async fn list_replica_lite_for_versions(
+        &self,
+        versions: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, Vec<ReplicaLite>>, CatalogError> {
+        if versions.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let ids: Vec<String> = versions.iter().map(Uuid::to_string).collect();
+        self.executor
+            .call(move |x| {
+                let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT file_version_id,chunk_id,storage_target_id,object_kind,state,last_verified_at FROM replicas WHERE file_version_id IN ({placeholders}) ORDER BY file_version_id,chunk_id,id"
+                );
+                let mut s = x.prepare(&sql)?;
+                let params: Vec<&dyn rusqlite::ToSql> =
+                    ids.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let rows = s.query_map(params.as_slice(), |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                    ))
+                })?;
+                let mut out: std::collections::HashMap<Uuid, Vec<ReplicaLite>> =
+                    std::collections::HashMap::new();
+                for row in rows {
+                    let (version_id, chunk_id, target_id, kind, state, verified_at) = row?;
+                    let version_id = id(version_id)?;
+                    out.entry(version_id).or_default().push(ReplicaLite {
+                        file_version_id: version_id,
+                        chunk_id: chunk_id.map(id).transpose()?,
+                        storage_target_id: id(target_id)?,
+                        object_kind: ObjectKind::parse(&kind)?,
+                        state: ReplicaState::parse(&state)?,
+                        last_verified_at: verified_at,
+                    });
+                }
+                Ok(out)
+            })
+            .await
+    }
     pub async fn list_storage_target_locators(
         &self,
         target: Uuid,

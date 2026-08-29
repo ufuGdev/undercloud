@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `CatalogExecutor`: the single dedicated background thread that owns `crates/catalog`'s one `rusqlite::Connection` (ADR-003 "Concurrency") — rather than a `Mutex`-shared connection risking blocked async threads or lock-ordering bugs, every operation is a `Box<dyn FnOnce(&mut Connection) + Send>` job sent over `std::sync::mpsc` to one OS thread that owns the connection outright; `&mut Connection` (not `&`) because `rusqlite::Connection::transaction` needs exclusive access to prevent nested transactions at compile time.
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 
 use rusqlite::Connection;
@@ -41,7 +43,10 @@ impl CatalogExecutor {
             .map_err(|_| CatalogError::ExecutorUnavailable)?;
 
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(CatalogExecutorHandle { sender: job_tx }),
+            Ok(Ok(())) => Ok(CatalogExecutorHandle {
+                sender: job_tx,
+                round_trips: Arc::new(AtomicU64::new(0)),
+            }),
             Ok(Err(err)) => Err(err),
             Err(_) => Err(CatalogError::ExecutorUnavailable),
         }
@@ -52,6 +57,12 @@ impl CatalogExecutor {
 #[derive(Clone, Debug)]
 pub(crate) struct CatalogExecutorHandle {
     sender: mpsc::Sender<Job>,
+    /// Counts completed `call()` round trips (channel hops to the executor
+    /// thread), shared across clones of this handle. Cheap enough to leave
+    /// always-on: used by performance tests/benches to assert a listing
+    /// stays O(1) catalog round trips as file count grows, rather than
+    /// trusting wall-clock timing alone.
+    round_trips: Arc<AtomicU64>,
 }
 
 impl CatalogExecutorHandle {
@@ -73,8 +84,18 @@ impl CatalogExecutorHandle {
             .send(job)
             .map_err(|_| CatalogError::ExecutorUnavailable)?;
 
-        reply_rx
+        let result = reply_rx
             .await
-            .map_err(|_| CatalogError::ExecutorUnavailable)?
+            .map_err(|_| CatalogError::ExecutorUnavailable)?;
+        self.round_trips.fetch_add(1, Ordering::Relaxed);
+        result
+    }
+
+    pub(crate) fn round_trip_count(&self) -> u64 {
+        self.round_trips.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn reset_round_trip_count(&self) {
+        self.round_trips.store(0, Ordering::Relaxed);
     }
 }

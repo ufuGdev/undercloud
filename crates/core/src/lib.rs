@@ -13,9 +13,234 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+/// Per-key async mutex table, replacing a single global lock with the
+/// smallest correct coordination domain (task-perf.md 9.4): two calls for
+/// the *same* key still serialize (preserving the automatic-backfill vs.
+/// manual-repair race fix this replaces), but calls for different keys run
+/// concurrently. Entries are removed once no caller holds or is waiting on
+/// them, so the table cannot grow without bound across a long-lived
+/// session.
+#[derive(Clone)]
+struct KeyedLock {
+    table: Arc<std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+impl KeyedLock {
+    fn new() -> Self {
+        Self {
+            table: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn lock(&self, key: Uuid) -> KeyedLockGuard {
+        let entry = {
+            let mut table = self.table.lock().unwrap();
+            table
+                .entry(key)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let guard = Arc::clone(&entry).lock_owned().await;
+        KeyedLockGuard {
+            table: self.table.clone(),
+            key,
+            entry,
+            guard: Some(guard),
+        }
+    }
+}
+
+struct KeyedLockGuard {
+    table: Arc<std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
+    key: Uuid,
+    entry: Arc<tokio::sync::Mutex<()>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for KeyedLockGuard {
+    fn drop(&mut self) {
+        // Release the per-key lock before touching the table, so a waiter
+        // parked on `entry` can proceed as soon as the table lock allows.
+        self.guard.take();
+        let mut table = self.table.lock().unwrap();
+        if let Some(current) = table.get(&self.key) {
+            // strong_count == 2 iff the only remaining references are the
+            // table's own clone and `self.entry` here -- no other caller
+            // is holding or waiting on this key, so it is safe to drop the
+            // entry entirely rather than let the table grow forever.
+            if Arc::ptr_eq(current, &self.entry) && Arc::strong_count(&self.entry) == 2 {
+                table.remove(&self.key);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod keyed_lock_tests {
+    use super::KeyedLock;
+    use tokio::sync::oneshot;
+    use uuid::Uuid;
+
+    /// Deterministic (no sleeps): task A takes the lock for key K and
+    /// parks on a release signal instead of finishing immediately. Task B
+    /// is spawned only after A confirms it holds the lock, and signals
+    /// when it *starts* calling `lock()`; the main task then bounded-polls
+    /// (yielding, not sleeping) until B is registered as a second holder
+    /// of the same table entry before asserting B has NOT yet acquired
+    /// it. Only then does the test release A and confirm B completes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn same_key_serializes_concurrent_holders() {
+        let lock = KeyedLock::new();
+        let key = Uuid::new_v4();
+        let (a_acquired_tx, a_acquired_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let (b_acquired_tx, mut b_acquired_rx) = oneshot::channel::<()>();
+
+        let lock_a = lock.clone();
+        let a = tokio::spawn(async move {
+            let _guard = lock_a.lock(key).await;
+            a_acquired_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            // guard drops here, releasing the key.
+        });
+        a_acquired_rx.await.unwrap();
+
+        let lock_b = lock.clone();
+        let b = tokio::spawn(async move {
+            let _guard = lock_b.lock(key).await;
+            let _ = b_acquired_tx.send(());
+        });
+
+        // Wait until B is registered as a second reference on the same
+        // entry (map's clone + A's `entry` field + B's in-flight clone
+        // while it awaits the mutex == 3), proving B genuinely reached
+        // `lock()` and is blocked on it, not merely unscheduled.
+        for _ in 0..1_000_000 {
+            if let Some(entry) = lock.table.lock().unwrap().get(&key) {
+                if std::sync::Arc::strong_count(entry) >= 3 {
+                    break;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            b_acquired_rx.try_recv().is_err(),
+            "B must not acquire the same key while A still holds it"
+        );
+        release_tx.send(()).unwrap();
+        b_acquired_rx.await.unwrap();
+        a.await.unwrap();
+        b.await.unwrap();
+    }
+
+    /// Two different keys must not block each other: B completes even
+    /// though A never releases within the test, proven by B's future
+    /// actually resolving (not by timing).
+    #[tokio::test]
+    async fn different_keys_do_not_block_each_other() {
+        let lock = KeyedLock::new();
+        let key_a = Uuid::new_v4();
+        let key_b = Uuid::new_v4();
+        let _guard_a = lock.lock(key_a).await;
+        let guard_b = tokio::time::timeout(std::time::Duration::from_secs(5), lock.lock(key_b))
+            .await
+            .expect("locking an unrelated key must not wait on key_a's holder");
+        drop(guard_b);
+    }
+
+    /// The table must not leak an entry once its only holder releases it.
+    #[tokio::test]
+    async fn released_key_is_removed_from_the_table() {
+        let lock = KeyedLock::new();
+        let key = Uuid::new_v4();
+        {
+            let _guard = lock.lock(key).await;
+            assert_eq!(lock.table.lock().unwrap().len(), 1);
+        }
+        assert_eq!(
+            lock.table.lock().unwrap().len(),
+            0,
+            "table must not grow without bound after the guard is dropped"
+        );
+    }
+
+    /// Rust drop semantics run a local's `Drop` on every exit path from
+    /// its scope -- an early `?`/`Err` return included -- so cleanup after
+    /// a failed critical section is structurally guaranteed, not merely
+    /// observed by luck. This proves it for a real early-return path.
+    #[tokio::test]
+    async fn cleanup_happens_even_when_the_critical_section_errors() {
+        let lock = KeyedLock::new();
+        let key = Uuid::new_v4();
+        async fn fails(lock: &KeyedLock, key: Uuid) -> Result<(), ()> {
+            let _guard = lock.lock(key).await;
+            Err(())
+        }
+        assert!(fails(&lock, key).await.is_err());
+        assert_eq!(
+            lock.table.lock().unwrap().len(),
+            0,
+            "an errored critical section must not leak its key"
+        );
+    }
+
+    /// Aborting the task holding a guard (simulating cancellation) must
+    /// still run the guard's `Drop` and clean up the table entry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cleanup_happens_when_the_holder_task_is_cancelled() {
+        let lock = KeyedLock::new();
+        let key = Uuid::new_v4();
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel::<()>();
+        let lock_clone = lock.clone();
+        let task = tokio::spawn(async move {
+            let _guard = lock_clone.lock(key).await;
+            acquired_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        acquired_rx.await.unwrap();
+        assert_eq!(lock.table.lock().unwrap().len(), 1);
+        task.abort();
+        let _ = task.await;
+        assert_eq!(
+            lock.table.lock().unwrap().len(),
+            0,
+            "aborting the holder task must still drop its guard and clean up the key"
+        );
+    }
+
+    /// A still-waiting second holder must keep the entry alive: dropping
+    /// the first guard while a second lock() call is in flight for the
+    /// same key must not remove the entry out from under it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_waiting_second_holder_keeps_the_entry_alive() {
+        let lock = KeyedLock::new();
+        let key = Uuid::new_v4();
+        let guard_a = lock.lock(key).await;
+        let lock_b = lock.clone();
+        let b = tokio::spawn(async move { lock_b.lock(key).await });
+        // Give the spawned task a chance to reach `lock()` and register as
+        // a second Arc holder before we drop A -- polling the table's
+        // strong count instead of sleeping a fixed duration.
+        for _ in 0..10_000 {
+            if let Some(entry) = lock.table.lock().unwrap().get(&key) {
+                if std::sync::Arc::strong_count(entry) >= 3 {
+                    break;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        drop(guard_a);
+        let _guard_b = b.await.unwrap();
+        assert_eq!(lock.table.lock().unwrap().len(), 1);
+        drop(_guard_b);
+        assert_eq!(lock.table.lock().unwrap().len(), 0);
+    }
+}
+
 pub use undercloud_catalog::ActivityEventRecord;
 use undercloud_catalog::{
-    CatalogBootstrap, CatalogError, HealthState, JobKind, ObjectKind, ReplicaState, UnlockedCatalog,
+    CatalogBootstrap, CatalogError, HealthState, JobKind, ObjectKind, ReplicaLite, ReplicaState,
+    UnlockedCatalog,
 };
 pub use undercloud_catalog::{NewActivityEvent, RecoveryFreshnessRecord};
 use undercloud_chunker::{chunk_stream, DEFAULT_CHUNK_SIZE};
@@ -343,7 +568,7 @@ pub struct VaultSession {
     pub(crate) oauth_flow: OAuthFlow,
     pub(crate) oauth_registry: OAuthApplicationRegistry,
     pub(crate) background_cancel: CancellationToken,
-    pub(crate) repair_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) repair_locks: KeyedLock,
 }
 impl fmt::Debug for VaultSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -355,77 +580,107 @@ impl fmt::Debug for VaultSession {
             .finish()
     }
 }
+/// Pure protection-map computation shared by the per-file path
+/// (`protection_map_for_version`) and the bulk fallback in
+/// `list_files_cached`: identical logic on preloaded data, so switching a
+/// caller to batched I/O cannot change which targets count as verified.
+fn compute_protection_map(
+    version: Uuid,
+    chunk_count: u32,
+    chunks: &[undercloud_catalog::ChunkRecord],
+    replicas: &[ReplicaLite],
+    targets: &[undercloud_catalog::StorageTargetRecord],
+) -> ProtectionMap {
+    let expected_objects = chunk_count.saturating_add(1);
+    let mut summaries = Vec::with_capacity(targets.len());
+    for target in targets {
+        let target_replicas: Vec<_> = replicas
+            .iter()
+            .filter(|replica| replica.storage_target_id == target.id)
+            .collect();
+        let verified_objects = target_replicas
+            .iter()
+            .filter(|replica| replica.state == ReplicaState::Verified)
+            .count() as u32;
+        let corrupt = target_replicas
+            .iter()
+            .any(|replica| replica.state == ReplicaState::Corrupt);
+        let pending = target_replicas
+            .iter()
+            .any(|replica| replica.state == ReplicaState::Pending);
+        let manifest_verified = target_replicas.iter().any(|replica| {
+            replica.object_kind == ObjectKind::Manifest && replica.state == ReplicaState::Verified
+        });
+        let chunk_verified = chunks.iter().all(|chunk| {
+            target_replicas.iter().any(|replica| {
+                replica.object_kind == ObjectKind::Chunk
+                    && replica.chunk_id == Some(chunk.id)
+                    && replica.state == ReplicaState::Verified
+            })
+        });
+        let last_verified_at = if manifest_verified && chunk_verified {
+            let timestamps: Vec<_> = target_replicas
+                .iter()
+                .filter(|replica| replica.state == ReplicaState::Verified)
+                .filter_map(|replica| replica.last_verified_at.as_ref())
+                .cloned()
+                .collect();
+            (timestamps.len() == expected_objects as usize)
+                .then(|| timestamps.into_iter().min())
+                .flatten()
+        } else {
+            None
+        };
+        summaries.push(ProtectionTargetSummary {
+            target_id: target.id,
+            complete: manifest_verified && chunk_verified,
+            corrupt,
+            pending,
+            verified_objects,
+            expected_objects,
+            last_verified_at,
+        });
+    }
+    let verified_copies = summaries.iter().filter(|target| target.complete).count() as u32;
+    let required_copies = summaries.len().clamp(1, 2) as u32;
+    let last_verified_at = summaries
+        .iter()
+        .filter_map(|target| target.last_verified_at.as_ref())
+        .min()
+        .cloned();
+    ProtectionMap {
+        file_version_id: version,
+        verified_copies,
+        required_copies,
+        last_verified_at,
+        targets: summaries,
+    }
+}
+
 impl VaultSession {
     async fn protection_map_for_version(&self, version: Uuid) -> Result<ProtectionMap, CoreError> {
         let file_version = self.catalog.load_file_version(version).await?;
         let chunks = self.catalog.list_chunks(version).await?;
         let replicas = self.catalog.list_replicas(version).await?;
         let targets = self.catalog.load_storage_targets().await?;
-        let expected_objects = file_version.chunk_count.saturating_add(1);
-        let mut summaries = Vec::with_capacity(targets.len());
-        for target in targets {
-            let target_replicas: Vec<_> = replicas
-                .iter()
-                .filter(|replica| replica.storage_target_id == target.id)
-                .collect();
-            let verified_objects = target_replicas
-                .iter()
-                .filter(|replica| replica.state == ReplicaState::Verified)
-                .count() as u32;
-            let corrupt = target_replicas
-                .iter()
-                .any(|replica| replica.state == ReplicaState::Corrupt);
-            let pending = target_replicas
-                .iter()
-                .any(|replica| replica.state == ReplicaState::Pending);
-            let manifest_verified = target_replicas.iter().any(|replica| {
-                replica.object_kind == ObjectKind::Manifest
-                    && replica.state == ReplicaState::Verified
-            });
-            let chunk_verified = chunks.iter().all(|chunk| {
-                target_replicas.iter().any(|replica| {
-                    replica.object_kind == ObjectKind::Chunk
-                        && replica.chunk_id == Some(chunk.id)
-                        && replica.state == ReplicaState::Verified
-                })
-            });
-            let last_verified_at = if manifest_verified && chunk_verified {
-                let timestamps: Vec<_> = target_replicas
-                    .iter()
-                    .filter(|replica| replica.state == ReplicaState::Verified)
-                    .filter_map(|replica| replica.last_verified_at.as_ref())
-                    .cloned()
-                    .collect();
-                (timestamps.len() == expected_objects as usize)
-                    .then(|| timestamps.into_iter().min())
-                    .flatten()
-            } else {
-                None
-            };
-            summaries.push(ProtectionTargetSummary {
-                target_id: target.id,
-                complete: manifest_verified && chunk_verified,
-                corrupt,
-                pending,
-                verified_objects,
-                expected_objects,
-                last_verified_at,
-            });
-        }
-        let verified_copies = summaries.iter().filter(|target| target.complete).count() as u32;
-        let required_copies = summaries.len().clamp(1, 2) as u32;
-        let last_verified_at = summaries
-            .iter()
-            .filter_map(|target| target.last_verified_at.as_ref())
-            .min()
-            .cloned();
-        Ok(ProtectionMap {
-            file_version_id: version,
-            verified_copies,
-            required_copies,
-            last_verified_at,
-            targets: summaries,
-        })
+        let replicas: Vec<ReplicaLite> = replicas
+            .into_iter()
+            .map(|r| ReplicaLite {
+                file_version_id: version,
+                chunk_id: r.chunk_id,
+                storage_target_id: r.storage_target_id,
+                object_kind: r.object_kind,
+                state: r.state,
+                last_verified_at: r.last_verified_at,
+            })
+            .collect();
+        Ok(compute_protection_map(
+            version,
+            file_version.chunk_count,
+            &chunks,
+            &replicas,
+            &targets,
+        ))
     }
 
     pub async fn protection_map(&self, version: Uuid) -> Result<ProtectionMap, CoreError> {
@@ -925,53 +1180,159 @@ impl VaultSession {
     }
 
     /// Returns catalog metadata and the last durable health observation without remote I/O.
+    ///
+    /// Fetched in one catalog round trip (`list_file_summary_rows`) instead
+    /// of two per file, since each catalog call crosses the executor
+    /// channel. Versions with no recorded health observation yet (legacy
+    /// rows, or a version never health-checked) fall back to a protection
+    /// map computed from data batch-fetched for *all* such versions in one
+    /// extra round trip each (chunks, replicas, targets), not one round
+    /// trip per file — so total catalog round trips stay O(1) in the file
+    /// count regardless of observation coverage.
     pub async fn list_files_cached(&self) -> Result<Vec<FileSummary>, CoreError> {
-        let logical_files = self.catalog.list_logical_files().await?;
-        let mut summaries = Vec::with_capacity(logical_files.len());
-        for file in logical_files {
-            let health = if let Some(version) = file.current_version_id {
-                self.catalog
-                    .list_health_observations(version)
-                    .await?
-                    .last()
-                    .map(|observation| match observation.health_state {
-                        HealthState::Healthy => FileHealth::Healthy,
-                        HealthState::Degraded => FileHealth::Degraded,
-                        HealthState::AtRisk => FileHealth::AtRisk,
-                        HealthState::Unrecoverable => FileHealth::Unrecoverable,
-                    })
+        let rows = self.catalog.list_file_summary_rows().await?;
+        self.map_summary_rows(rows).await
+    }
+
+    /// Keyset-paginated listing (task-perf.md 7 pagination requirement):
+    /// `after` is the `logical_file_id` of the last row from the previous
+    /// page (`None` for the first page). Same mapping/fallback logic as
+    /// [`Self::list_files_cached`], scoped to just this page's rows, so
+    /// catalog round trips for a page stay bounded regardless of total
+    /// vault size (1 listing query, plus up to 3 more only if this page
+    /// contains rows with no health observation yet).
+    pub async fn list_files_page(
+        &self,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<FileSummary>, CoreError> {
+        let rows = self.catalog.list_file_summary_page(after, limit).await?;
+        self.map_summary_rows(rows).await
+    }
+
+    async fn map_summary_rows(
+        &self,
+        rows: Vec<undercloud_catalog::FileSummaryRow>,
+    ) -> Result<Vec<FileSummary>, CoreError> {
+        let fallback_versions: Vec<Uuid> = rows
+            .iter()
+            .filter(|row| row.health_state.is_none())
+            .filter_map(|row| row.current_version_id)
+            .collect();
+        let (targets, chunks_by_version, replicas_by_version) = if fallback_versions.is_empty() {
+            (Vec::new(), Default::default(), Default::default())
+        } else {
+            let targets = self.catalog.load_storage_targets().await?;
+            let chunks = self
+                .catalog
+                .list_chunks_for_versions(&fallback_versions)
+                .await?;
+            let replicas = self
+                .catalog
+                .list_replica_lite_for_versions(&fallback_versions)
+                .await?;
+            (targets, chunks, replicas)
+        };
+        let empty_chunks = Vec::new();
+        let empty_replicas = Vec::new();
+        let mut summaries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let health = row.health_state.map(|state| match state {
+                HealthState::Healthy => FileHealth::Healthy,
+                HealthState::Degraded => FileHealth::Degraded,
+                HealthState::AtRisk => FileHealth::AtRisk,
+                HealthState::Unrecoverable => FileHealth::Unrecoverable,
+            });
+            let (verified_copies, required_copies, last_verified_at) = if row.health_state.is_some()
+            {
+                (
+                    row.verified_replica_count.unwrap_or(0),
+                    row.required_replica_count.unwrap_or(0),
+                    row.last_verified_at,
+                )
             } else {
-                None
-            };
-            let size_bytes = match file.current_version_id {
-                Some(version) => Some(self.catalog.load_file_version(version).await?.file_size),
-                None => None,
-            };
-            let protection = match file.current_version_id {
-                Some(version) => self.protection_map_for_version(version).await?,
-                None => ProtectionMap {
-                    file_version_id: Uuid::nil(),
-                    verified_copies: 0,
-                    required_copies: 0,
-                    last_verified_at: None,
-                    targets: Vec::new(),
-                },
+                match row.current_version_id {
+                    Some(version) => {
+                        let chunks = chunks_by_version.get(&version).unwrap_or(&empty_chunks);
+                        let replicas = replicas_by_version.get(&version).unwrap_or(&empty_replicas);
+                        let protection = compute_protection_map(
+                            version,
+                            row.chunk_count.unwrap_or(0),
+                            chunks,
+                            replicas,
+                            &targets,
+                        );
+                        (
+                            protection.verified_copies,
+                            protection.required_copies,
+                            protection.last_verified_at,
+                        )
+                    }
+                    None => (0, 0, None),
+                }
             };
             summaries.push(FileSummary {
-                logical_file_id: file.id,
-                name: file.name,
-                mime: file.mime,
-                file_version_id: file.current_version_id,
-                size_bytes,
+                logical_file_id: row.id,
+                name: row.name,
+                mime: row.mime,
+                file_version_id: row.current_version_id,
+                size_bytes: row.file_size,
                 health,
                 health_current: false,
-                verified_copies: protection.verified_copies,
-                required_copies: protection.required_copies,
-                last_verified_at: protection.last_verified_at,
+                verified_copies,
+                required_copies,
+                last_verified_at,
             });
         }
         Ok(summaries)
     }
+
+    /// Single-file lookup without remote I/O: one indexed catalog round
+    /// trip via `list_file_summary_row`, not a scan of the whole vault
+    /// listing. `Ok(None)` when `file` does not exist or is not active.
+    pub async fn file_summary(&self, file: Uuid) -> Result<Option<FileSummary>, CoreError> {
+        let Some(row) = self.catalog.list_file_summary_row(file).await? else {
+            return Ok(None);
+        };
+        let health = row.health_state.map(|state| match state {
+            HealthState::Healthy => FileHealth::Healthy,
+            HealthState::Degraded => FileHealth::Degraded,
+            HealthState::AtRisk => FileHealth::AtRisk,
+            HealthState::Unrecoverable => FileHealth::Unrecoverable,
+        });
+        let (verified_copies, required_copies, last_verified_at) = if row.health_state.is_some() {
+            (
+                row.verified_replica_count.unwrap_or(0),
+                row.required_replica_count.unwrap_or(0),
+                row.last_verified_at,
+            )
+        } else {
+            match row.current_version_id {
+                Some(version) => {
+                    let protection = self.protection_map_for_version(version).await?;
+                    (
+                        protection.verified_copies,
+                        protection.required_copies,
+                        protection.last_verified_at,
+                    )
+                }
+                None => (0, 0, None),
+            }
+        };
+        Ok(Some(FileSummary {
+            logical_file_id: row.id,
+            name: row.name,
+            mime: row.mime,
+            file_version_id: row.current_version_id,
+            size_bytes: row.file_size,
+            health,
+            health_current: false,
+            verified_copies,
+            required_copies,
+            last_verified_at,
+        }))
+    }
+
     pub async fn list_trash(&self) -> Result<Vec<TrashFileSummary>, CoreError> {
         let files = self.catalog.list_trashed_files().await?;
         let jobs = self.catalog.list_deletion_jobs().await?;
@@ -1411,7 +1772,7 @@ impl VaultSession {
         fields(subsystem = "core", operation = "repair", stage = "start")
     )]
     pub async fn repair_automatically(&self, version: Uuid) -> Result<FileHealth, CoreError> {
-        let _repair_guard = self.repair_lock.lock().await;
+        let _repair_guard = self.repair_locks.lock(version).await;
         self.catalog
             .ensure_version_active(version)
             .await
@@ -1667,7 +2028,7 @@ async fn create_vault_with_store(
         oauth_flow: OAuthFlow::new(),
         oauth_registry: OAuthApplicationRegistry::official(),
         background_cancel: CancellationToken::new(),
-        repair_lock: Arc::new(tokio::sync::Mutex::new(())),
+        repair_locks: KeyedLock::new(),
     })
 }
 #[tracing::instrument(
@@ -1717,7 +2078,7 @@ pub async fn unlock_vault(handle: LockedVault, password: &str) -> Result<VaultSe
         oauth_flow: OAuthFlow::new(),
         oauth_registry: OAuthApplicationRegistry::official(),
         background_cancel: CancellationToken::new(),
-        repair_lock: Arc::new(tokio::sync::Mutex::new(())),
+        repair_locks: KeyedLock::new(),
     };
     for target in session.catalog.load_storage_targets().await? {
         if target.provider_kind == "local" {
@@ -2282,7 +2643,6 @@ where
         index += 1;
     }
     let hash = hasher.finalize();
-
     let manifest_encrypted = encrypt_manifest(
         manifest_key,
         &undercloud_crypto::ManifestIdentity {
