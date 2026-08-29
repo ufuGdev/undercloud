@@ -1450,7 +1450,10 @@ pub async fn list_files_page(
     let after = after.map(|a| parse_id(&a)).transpose()?;
     let limit = limit.clamp(1, 1000);
     let session = begin_session(&state).await?;
-    let result = session.list_files_page(after, limit).await.map_err(command_error);
+    let result = session
+        .list_files_page(after, limit)
+        .await
+        .map_err(command_error);
     end_session(&state, session).await;
     let files = result?;
     let next_cursor = (files.len() as u32 == limit)
@@ -1626,18 +1629,17 @@ pub async fn prepare_file_deletion(
     let session = begin_session(&state).await?;
     let active = session.file_summary(file_id).await.map_err(command_error)?;
     let trash = session.list_trash().await.map_err(command_error)?;
-    let (file, state_name) =
-        if let Some(file) = active {
-            (file, "active".to_owned())
-        } else if let Some(item) = trash
-            .into_iter()
-            .find(|item| item.file.logical_file_id == file_id)
-        {
-            (item.file, item.state)
-        } else {
-            end_session(&state, session).await;
-            return Err(deletion_transition_error(&operation_id, "file_not_found"));
-        };
+    let (file, state_name) = if let Some(file) = active {
+        (file, "active".to_owned())
+    } else if let Some(item) = trash
+        .into_iter()
+        .find(|item| item.file.logical_file_id == file_id)
+    {
+        (item.file, item.state)
+    } else {
+        end_session(&state, session).await;
+        return Err(deletion_transition_error(&operation_id, "file_not_found"));
+    };
     let valid = (mode == "trash" && state_name == "active")
         || (mode == "permanent" && permanent_deletion_prepare_allowed(&state_name));
     if !valid {
